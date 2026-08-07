@@ -1,0 +1,27 @@
+{
+	"compilerOptions": {
+		"allowJs": false,
+		"esModuleInterop": true,
+		"forceConsistentCasingInFileNames": true,
+		"lib": [
+			"DOM",
+			"DOM.Iterable",
+			"ES2021"
+		],
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"noEmit": true,
+		"noImplicitAny": true,
+		"noImplicitReturns": true,
+		"noImplicitThis": true,
+		"noUnusedLocals": true,
+		"strict": true,
+		"target": "ES2021",
+		"types": [
+			"node"
+		]
+	},
+	"include": [
+		"src/**/*.ts"
+	]
+}

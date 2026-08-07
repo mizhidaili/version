@@ -1,0 +1,42 @@
+name: Draft Obsidian release
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+      - run: npm run build
+      - run: npm run release:check
+
+      - name: Verify tag matches manifest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node -e "const m=require('./manifest.json'); if(m.version!==process.env.RELEASE_TAG){throw new Error('Tag must exactly match manifest version: '+m.version)}"
+
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            main.js
+            styles.css
+
+      - name: Create draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --draft main.js manifest.json styles.css

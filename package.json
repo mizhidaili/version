@@ -1,0 +1,31 @@
+{
+	"name": "version",
+	"version": "0.1.0",
+	"description": "Create and switch between multiple editable versions of a note.",
+	"author": "Ikue",
+	"license": "MIT",
+	"main": "main.js",
+	"type": "module",
+	"private": true,
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
+		"lint": "eslint .",
+		"test": "node tests/run.mjs",
+		"release:check": "node scripts/check-release.mjs",
+		"release:bundle": "npm run build && npm run release:check && node scripts/prepare-release.mjs",
+		"version": "node version-bump.mjs && git add manifest.json versions.json"
+	},
+	"devDependencies": {
+		"@eslint/js": "^9.39.5",
+		"@types/node": "^22.15.17",
+		"esbuild": "0.25.5",
+		"eslint": "^9.39.5",
+		"eslint-plugin-obsidianmd": "^0.4.1",
+		"globals": "^17.8.0",
+		"jiti": "^2.7.0",
+		"obsidian": "latest",
+		"typescript": "^5.8.3",
+		"typescript-eslint": "^8.65.0"
+	}
+}
