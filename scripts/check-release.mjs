@@ -9,7 +9,7 @@ const errors = [];
 const semver = /^\d+\.\d+\.\d+$/;
 
 if (manifest.id !== 'version') errors.push('manifest id must be "version".');
-if (manifest.name !== 'Version') errors.push('manifest name must be "Version".');
+if (manifest.name !== 'Multi-Version Notes') errors.push('manifest name must be "Multi-Version Notes".');
 if (!semver.test(manifest.version)) errors.push('manifest version must use x.y.z format.');
 if (packageJson.version !== manifest.version) errors.push('package.json and manifest.json versions differ.');
 if (versions[manifest.version] !== manifest.minAppVersion) {
@@ -32,5 +32,5 @@ if (errors.length > 0) {
 	process.exit(1);
 }
 
-console.log(`Release check passed for Version ${manifest.version}.`);
+console.log(`Release check passed for Multi-Version Notes ${manifest.version}.`);
 console.log('GitHub release assets: main.js, manifest.json, styles.css');

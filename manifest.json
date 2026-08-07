@@ -1,7 +1,7 @@
 {
 	"id": "version",
-	"name": "Version",
-	"version": "0.1.0",
+	"name": "Multi-Version Notes",
+	"version": "0.1.1",
 	"minAppVersion": "1.13.4",
 	"description": "Create and switch between multiple editable versions of a note.",
 	"author": "Ikue",
