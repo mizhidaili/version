@@ -221,6 +221,21 @@ assert.match(
 	'Settings cards must inherit Obsidian theme colors',
 );
 assert.match(
+	versionCss,
+	/\.version-settings-tab\s*\{[\s\S]*?max-width:\s*none;[\s\S]*?width:\s*100%;/u,
+	'Settings must expand with the available Obsidian settings pane instead of staying in a narrow fixed column',
+);
+assert.match(
+	versionCss,
+	/\.version-settings-section\s*\{[\s\S]*?width:\s*100%;/u,
+	'Each localized settings section must use the full responsive content width',
+);
+assert.doesNotMatch(
+	versionCss,
+	/\.version-settings-section\s*\{[^}]*?flex-direction:\s*column;/u,
+	'Settings groups must keep Obsidian\'s native group layout instead of overriding it with a stretching flex column',
+);
+assert.match(
 	main,
 	/findRegisteredMembership\(oldPath, file\)[\s\S]*?memberMatchesFile\(slot\.member, file\)/u,
 	'Rename handling must identify a registered member by stored identity, not path alone',

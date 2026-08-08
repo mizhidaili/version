@@ -1312,15 +1312,21 @@ body > .version-native-file-action-flyout .version-native-file-action:not(.is-wa
 }
 
 .version-settings-tab {
-	max-width: 58rem;
+	box-sizing: border-box;
+	max-width: none;
 	padding-block-end: var(--size-4-8);
+	width: 100%;
 }
 
 .version-settings-section {
-	display: flex;
-	flex-direction: column;
-	gap: var(--size-4-3);
+	box-sizing: border-box;
 	margin-block: var(--size-4-6) var(--size-4-10);
+	width: 100%;
+}
+
+.version-settings-section .setting-items {
+	box-sizing: border-box;
+	width: 100%;
 }
 
 .version-settings-section:first-child {
@@ -1345,8 +1351,10 @@ body > .version-native-file-action-flyout .version-native-file-action:not(.is-wa
 	background: var(--background-secondary);
 	border: 1px solid var(--background-modifier-border);
 	border-radius: var(--radius-l);
+	box-sizing: border-box;
 	min-height: 4.75rem;
 	padding: var(--size-4-5) var(--size-4-6);
+	width: 100%;
 }
 
 .version-settings-card .setting-item-info {
@@ -1361,7 +1369,7 @@ body > .version-native-file-action-flyout .version-native-file-action:not(.is-wa
 
 .version-settings-card .setting-item-description {
 	line-height: var(--line-height-tight);
-	max-width: 38rem;
+	max-width: none;
 }
 
 .version-settings-card .setting-item-control {
