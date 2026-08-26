@@ -15,7 +15,10 @@ import {
 import { VersionRegistry } from '../src/version-registry';
 import { SerializedDataStore } from '../src/serialized-data-store';
 import { filterAllowedSeries } from '../src/series-choice-filter';
-import { rollbackCreatedBlankFiles } from '../src/created-file-rollback';
+import {
+	rollbackCreatedBlankFiles,
+	rollbackCreatedFilesIfUnchanged,
+} from '../src/created-file-rollback';
 import { captureFile } from '../src/captured-file';
 import {
 	captureVersionForTrash,
@@ -48,6 +51,33 @@ import {
 	canOpenFileRecoveryHistory,
 	openFileRecoveryHistory,
 } from '../src/file-recovery-compat';
+import {
+	buildFileExplorerVisibilityPlan,
+	FileExplorerDecorator,
+} from '../src/ui/file-explorer-decorator';
+import {
+	collectBacklinkTargets,
+	collectThemeBacklinks,
+	formatBacklinkTargets,
+} from '../src/ui/backlinks-modal';
+import {
+	buildVersionFileName,
+	buildVersionFilePath,
+	createPreparedVersionFile,
+	createVersionFile,
+	detectVersionFileFormat,
+	getBlankCanvasContent,
+	isValidExcalidrawMarkdown,
+	isValidLegacyExcalidrawJson,
+	prepareVersionFile,
+	stripVersionFileSuffix,
+	VersionFileCreationError,
+	VersionFileCreationErrorCode,
+} from '../src/version-file-creation';
+import {
+	createAndRegisterVersionFile,
+	VersionFileRegistrationError,
+} from '../src/version-file-creation-transaction';
 
 let assertions = 0;
 function check(condition: unknown, message: string): asserts condition {
@@ -75,7 +105,571 @@ function memberAt(
 			};
 }
 
+const VALID_EXCALIDRAW_MARKDOWN = `---
+excalidraw-plugin: parsed
+---
+# Drawing
+\`\`\`json
+{"type":"excalidraw","elements":[],"appState":{}}
+\`\`\`
+`;
+
+const VALID_LEGACY_EXCALIDRAW = JSON.stringify({
+	appState: {},
+	elements: [],
+	files: {},
+	source: 'https://excalidraw.com',
+	type: 'excalidraw',
+	version: 2,
+});
+
+function makeCreationApp(
+	vault: Vault,
+	plugin: unknown = null,
+	enabled = plugin !== null,
+): never {
+	return {
+		fileManager: {
+			trashFile: async (file: TFile) => {
+				(vault as unknown as InstanceType<typeof Vault>).delete(file);
+			},
+		},
+		plugins: {
+			enabledPlugins: new Set(
+				enabled ? ['obsidian-excalidraw-plugin'] : [],
+			),
+			plugins: plugin === null
+				? {}
+				: { 'obsidian-excalidraw-plugin': plugin },
+		},
+		vault,
+	} as never;
+}
+
+function makeExcalidrawPlugin(
+	vault: Vault,
+	getBlankDrawing: () => Promise<string> | string,
+): unknown {
+	return {
+		createDrawing: async (
+			filename: string,
+			folderPath: string,
+			content: string,
+		) => vault.create(
+			folderPath === '/' ? filename : `${folderPath}/${filename}`,
+			content,
+		),
+		getBlankDrawing,
+	};
+}
+
 async function run(): Promise<void> {
+equal(detectVersionFileFormat('Topic.md'), 'markdown', 'Markdown format is detected');
+equal(detectVersionFileFormat('Board.canvas'), 'canvas', 'Canvas format is detected');
+equal(
+	detectVersionFileFormat('Sketch.excalidraw.md'),
+	'excalidraw',
+	'compound Excalidraw Markdown is detected before generic Markdown',
+);
+equal(
+	detectVersionFileFormat('Legacy.excalidraw'),
+	'excalidraw',
+	'legacy Excalidraw JSON is detected',
+);
+equal(
+	stripVersionFileSuffix('Sketch.excalidraw.md'),
+	'Sketch',
+	'compound Excalidraw suffix is removed as one unit',
+);
+equal(
+	buildVersionFileName('Draft.md', 'canvas'),
+	'Draft.canvas',
+	'changing format never duplicates an old supported suffix',
+);
+equal(
+	buildVersionFilePath(' Folder ', 'Draft', 'canvas'),
+	' Folder /Draft.canvas',
+	'creation preserves legal leading and trailing spaces in a real parent folder',
+);
+assert.deepEqual(JSON.parse(getBlankCanvasContent()), { edges: [], nodes: [] });
+assertions += 1;
+equal(
+	isValidExcalidrawMarkdown(VALID_EXCALIDRAW_MARKDOWN),
+	true,
+	'blank Excalidraw Markdown requires a marker and drawing payload',
+);
+equal(
+	isValidLegacyExcalidrawJson(VALID_LEGACY_EXCALIDRAW),
+	true,
+	'legacy compatibility JSON is accepted as a real Excalidraw drawing',
+);
+
+const formatCreationVault = new Vault() as unknown as Vault;
+const formatCreationApp = makeCreationApp(formatCreationVault);
+const preparedMarkdown = await prepareVersionFile(formatCreationApp, {
+	folderPath: 'Versions',
+	format: 'markdown',
+	stem: 'Topic V2',
+});
+equal(preparedMarkdown.path, 'Versions/Topic V2.md', 'Markdown uses an exact .md path');
+equal(preparedMarkdown.content, '', 'Markdown starts as empty text');
+const createdMarkdown = await createPreparedVersionFile(
+	formatCreationApp,
+	preparedMarkdown,
+);
+equal(
+	await formatCreationVault.read(createdMarkdown),
+	'',
+	'prepared Markdown content is written unchanged',
+);
+const createdCanvas = await createVersionFile(formatCreationApp, {
+	folderPath: 'Versions',
+	format: 'canvas',
+	stem: 'Topic V3',
+});
+assert.deepEqual(
+	JSON.parse(await formatCreationVault.read(createdCanvas)),
+	{ edges: [], nodes: [] },
+	'Canvas creation writes valid empty Canvas JSON',
+);
+assertions += 1;
+
+let excalidrawTemplateCalls = 0;
+const excalidrawMarkdownVault = new Vault() as unknown as Vault;
+const excalidrawMarkdownApp = makeCreationApp(
+	excalidrawMarkdownVault,
+	makeExcalidrawPlugin(excalidrawMarkdownVault, async () => {
+		excalidrawTemplateCalls += 1;
+		return VALID_EXCALIDRAW_MARKDOWN;
+	}),
+);
+const preparedExcalidrawMarkdown = await prepareVersionFile(
+	excalidrawMarkdownApp,
+	{ folderPath: 'Versions', format: 'excalidraw', stem: 'Topic V4' },
+);
+equal(excalidrawTemplateCalls, 1, 'Excalidraw content comes from its enabled plugin API');
+equal(
+	preparedExcalidrawMarkdown.path,
+	'Versions/Topic V4.excalidraw.md',
+	'Excalidraw Markdown receives its compound suffix',
+);
+const createdExcalidrawMarkdown = await createPreparedVersionFile(
+	excalidrawMarkdownApp,
+	preparedExcalidrawMarkdown,
+);
+equal(
+	await excalidrawMarkdownVault.read(createdExcalidrawMarkdown),
+	VALID_EXCALIDRAW_MARKDOWN,
+	'API-provided Excalidraw Markdown is written byte-for-byte',
+);
+
+const legacyExcalidrawVault = new Vault() as unknown as Vault;
+const legacyExcalidrawApp = makeCreationApp(
+	legacyExcalidrawVault,
+	makeExcalidrawPlugin(
+		legacyExcalidrawVault,
+		() => VALID_LEGACY_EXCALIDRAW,
+	),
+);
+const preparedLegacyExcalidraw = await prepareVersionFile(
+	legacyExcalidrawApp,
+	{ folderPath: '', format: 'excalidraw', stem: 'Legacy V2' },
+);
+equal(
+	preparedLegacyExcalidraw.path,
+	'Legacy V2.excalidraw',
+	'Excalidraw compatibility mode receives a legacy .excalidraw path',
+);
+
+const disabledExcalidrawVault = new Vault() as unknown as Vault;
+await assert.rejects(
+	() => prepareVersionFile(makeCreationApp(disabledExcalidrawVault), {
+		folderPath: '',
+		format: 'excalidraw',
+		stem: 'Disabled',
+	}),
+	(error: unknown) =>
+		error instanceof VersionFileCreationError &&
+		error.code === VersionFileCreationErrorCode.ExcalidrawPluginUnavailable,
+);
+assertions += 1;
+equal(
+	disabledExcalidrawVault.getFileByPath('Disabled.excalidraw.md'),
+	null,
+	'a disabled Excalidraw plugin never leaves a placeholder file',
+);
+
+await assert.rejects(
+	() => prepareVersionFile(
+		makeCreationApp(new Vault() as unknown as Vault, {
+			getBlankDrawing: () => VALID_EXCALIDRAW_MARKDOWN,
+		}),
+		{ folderPath: '', format: 'excalidraw', stem: 'Missing API' },
+	),
+	(error: unknown) =>
+		error instanceof VersionFileCreationError &&
+		error.code === VersionFileCreationErrorCode.ExcalidrawApiUnavailable,
+);
+assertions += 1;
+const invalidExcalidrawVault = new Vault() as unknown as Vault;
+await assert.rejects(
+	() => prepareVersionFile(
+		makeCreationApp(
+			invalidExcalidrawVault,
+			makeExcalidrawPlugin(invalidExcalidrawVault, () => 'not a drawing'),
+		),
+		{ folderPath: '', format: 'excalidraw', stem: 'Invalid drawing' },
+	),
+	(error: unknown) =>
+		error instanceof VersionFileCreationError &&
+		error.code === VersionFileCreationErrorCode.InvalidExcalidrawContent,
+);
+assertions += 1;
+const failingExcalidrawVault = new Vault() as unknown as Vault;
+await assert.rejects(
+	() => prepareVersionFile(
+		makeCreationApp(
+			failingExcalidrawVault,
+			makeExcalidrawPlugin(failingExcalidrawVault, () => {
+				throw new Error('template failed');
+			}),
+		),
+		{ folderPath: '', format: 'excalidraw', stem: 'API failure' },
+	),
+	(error: unknown) =>
+		error instanceof VersionFileCreationError &&
+		error.code ===
+			VersionFileCreationErrorCode.ExcalidrawContentPreparationFailed,
+);
+assertions += 1;
+
+const excalidrawRaceVault = new Vault() as unknown as Vault;
+let excalidrawRaceFolder: string | null = null;
+let excalidrawRaceFilename: string | null = null;
+const excalidrawRaceApp = makeCreationApp(excalidrawRaceVault, {
+	createDrawing: async (
+		filename: string,
+		folderPath: string,
+		content: string,
+	) => {
+		excalidrawRaceFilename = filename;
+		excalidrawRaceFolder = folderPath;
+		await excalidrawRaceVault.create(filename, 'user-created conflict');
+		return excalidrawRaceVault.create(
+			'Race_0.excalidraw.md',
+			content,
+		);
+	},
+	getBlankDrawing: () => VALID_EXCALIDRAW_MARKDOWN,
+});
+await assert.rejects(
+	() => createVersionFile(excalidrawRaceApp, {
+		folderPath: '',
+		format: 'excalidraw',
+		stem: 'Race',
+	}),
+	(error: unknown) =>
+		error instanceof VersionFileCreationError &&
+		error.code === VersionFileCreationErrorCode.PathConflict &&
+		error.path === 'Race.excalidraw.md',
+);
+assertions += 1;
+equal(excalidrawRaceFilename, 'Race.excalidraw.md', 'Excalidraw receives the exact filename');
+equal(excalidrawRaceFolder, '/', 'root Excalidraw creation passes a truthy root folder');
+equal(
+	excalidrawRaceVault.getFileByPath('Race_0.excalidraw.md'),
+	null,
+	'an unchanged unique-name race artifact is safely removed',
+);
+const excalidrawRaceConflict = excalidrawRaceVault.getFileByPath(
+	'Race.excalidraw.md',
+);
+check(excalidrawRaceConflict, 'the conflicting user file remains visible');
+equal(
+	await excalidrawRaceVault.read(excalidrawRaceConflict),
+	'user-created conflict',
+	'the conflicting user file content is preserved',
+);
+
+const editedExcalidrawRaceVault = new Vault() as unknown as Vault;
+const editedExcalidrawRaceApp = makeCreationApp(editedExcalidrawRaceVault, {
+	createDrawing: async (
+		filename: string,
+		_folderPath: string,
+		content: string,
+	) => {
+		await editedExcalidrawRaceVault.create(filename, 'user-created conflict');
+		const uniqueFile = await editedExcalidrawRaceVault.create(
+			'Edited race_0.excalidraw.md',
+			content,
+		);
+		editedExcalidrawRaceVault.modify(uniqueFile, 'user edit during API wait');
+		return uniqueFile;
+	},
+	getBlankDrawing: () => VALID_EXCALIDRAW_MARKDOWN,
+});
+await assert.rejects(
+	() => createVersionFile(editedExcalidrawRaceApp, {
+		folderPath: '',
+		format: 'excalidraw',
+		stem: 'Edited race',
+	}),
+	(error: unknown) =>
+		error instanceof VersionFileCreationError &&
+		error.code === VersionFileCreationErrorCode.PathConflict &&
+		error.rollbackFailures[0] === 'Edited race_0.excalidraw.md',
+);
+assertions += 1;
+const editedExcalidrawRaceFile = editedExcalidrawRaceVault.getFileByPath(
+	'Edited race_0.excalidraw.md',
+);
+check(editedExcalidrawRaceFile, 'an edited unique-name race artifact is preserved');
+equal(
+	await editedExcalidrawRaceVault.read(editedExcalidrawRaceFile),
+	'user edit during API wait',
+	'unsafe Excalidraw race cleanup never removes user edits',
+);
+
+const invalidExcalidrawReturnVault = new Vault() as unknown as Vault;
+await assert.rejects(
+	() => createVersionFile(
+		makeCreationApp(invalidExcalidrawReturnVault, {
+			createDrawing: async () => null,
+			getBlankDrawing: () => VALID_EXCALIDRAW_MARKDOWN,
+		}),
+		{ folderPath: '', format: 'excalidraw', stem: 'Invalid return' },
+	),
+	(error: unknown) =>
+		error instanceof VersionFileCreationError &&
+		error.code === VersionFileCreationErrorCode.ExcalidrawApiUnavailable,
+);
+assertions += 1;
+equal(
+	invalidExcalidrawReturnVault.getFileByPath('Invalid return.excalidraw.md'),
+	null,
+	'an incompatible Excalidraw API return never creates or registers a placeholder',
+);
+
+const conflictCreationVault = new Vault(['Taken.md']) as unknown as Vault;
+await assert.rejects(
+	() => createVersionFile(makeCreationApp(conflictCreationVault), {
+		folderPath: '',
+		format: 'markdown',
+		stem: 'Taken',
+	}),
+	(error: unknown) =>
+		error instanceof VersionFileCreationError &&
+		error.code === VersionFileCreationErrorCode.PathConflict &&
+		error.path === 'Taken.md',
+);
+assertions += 1;
+
+const openFailureVault = new Vault() as unknown as Vault;
+let registeredAfterOpenFailure: TFile | null = null;
+const openFailureResult = await createAndRegisterVersionFile(
+	makeCreationApp(openFailureVault),
+	{ folderPath: '', format: 'markdown', stem: 'Open failure' },
+	async (file) => {
+		registeredAfterOpenFailure = file;
+	},
+	async (file) => {
+		(openFailureVault as unknown as InstanceType<typeof Vault>).delete(file);
+	},
+	async () => {
+		throw new Error('editor unavailable');
+	},
+);
+equal(
+	registeredAfterOpenFailure,
+	openFailureResult.file,
+	'opening happens only after the new file is registered',
+);
+check(openFailureResult.openError instanceof Error, 'opening failure is reported separately');
+equal(
+	openFailureVault.getFileByPath('Open failure.md'),
+	openFailureResult.file,
+	'an opening failure preserves the committed file and relationship input',
+);
+
+const canvasRegistrationFailureVault = new Vault() as unknown as Vault;
+await assert.rejects(
+	() => createAndRegisterVersionFile(
+		makeCreationApp(canvasRegistrationFailureVault),
+		{ folderPath: '', format: 'canvas', stem: 'Rollback canvas' },
+		async () => {
+			throw new Error('registry write failed');
+		},
+		async (file) => {
+			(canvasRegistrationFailureVault as unknown as InstanceType<typeof Vault>)
+				.delete(file);
+		},
+	),
+	(error: unknown) =>
+		error instanceof VersionFileRegistrationError &&
+		error.rollbackFailures.length === 0,
+);
+assertions += 1;
+equal(
+	canvasRegistrationFailureVault.getFileByPath('Rollback canvas.canvas'),
+	null,
+	'an unchanged non-empty Canvas blank is rolled back after registration fails',
+);
+
+const excalidrawRegistrationFailureVault = new Vault() as unknown as Vault;
+await assert.rejects(
+	() => createAndRegisterVersionFile(
+		makeCreationApp(
+			excalidrawRegistrationFailureVault,
+			makeExcalidrawPlugin(
+				excalidrawRegistrationFailureVault,
+				() => VALID_EXCALIDRAW_MARKDOWN,
+			),
+		),
+		{ folderPath: '', format: 'excalidraw', stem: 'Rollback drawing' },
+		async () => {
+			throw new Error('registry write failed');
+		},
+		async (file) => {
+			(excalidrawRegistrationFailureVault as unknown as InstanceType<typeof Vault>)
+				.delete(file);
+		},
+	),
+	(error: unknown) =>
+		error instanceof VersionFileRegistrationError &&
+		error.rollbackFailures.length === 0,
+);
+assertions += 1;
+equal(
+	excalidrawRegistrationFailureVault.getFileByPath(
+		'Rollback drawing.excalidraw.md',
+	),
+	null,
+	'an unchanged API-created Excalidraw blank is rolled back after registration fails',
+);
+
+const editedCreationVault = new Vault() as unknown as Vault;
+let editedRollbackTrashCalls = 0;
+await assert.rejects(
+	() => createAndRegisterVersionFile(
+		makeCreationApp(editedCreationVault),
+		{ folderPath: '', format: 'canvas', stem: 'User edited' },
+		async (file) => {
+			(editedCreationVault as unknown as InstanceType<typeof Vault>)
+				.modify(file, '{"user":"content"}');
+			throw new Error('registry write failed');
+		},
+		async () => {
+			editedRollbackTrashCalls += 1;
+		},
+	),
+	(error: unknown) =>
+		error instanceof VersionFileRegistrationError &&
+		error.rollbackFailures[0] === 'User edited.canvas',
+);
+assertions += 1;
+equal(editedRollbackTrashCalls, 0, 'rollback never trashes a newly edited file');
+check(
+	editedCreationVault.getFileByPath('User edited.canvas'),
+	'a newly edited file remains visible and readable after registration fails',
+);
+
+const attributedTargets = collectBacklinkTargets(
+	{
+		'Topic.md': 1,
+		'Topic V3.md': 2,
+		'Unrelated.md': 7,
+	},
+	[
+		{ path: 'Topic V3.md', version: 3 },
+		{ path: 'Topic.md', version: 1 },
+		{ path: 'Topic V5.canvas', version: 5 },
+	],
+);
+assert.deepEqual(
+	attributedTargets,
+	[
+		{ count: 1, version: 1 },
+		{ count: 2, version: 3 },
+	],
+	'backlink targets use registered paths, preserve gaps, count repeats, and sort numerically',
+);
+assertions += 1;
+equal(
+	formatBacklinkTargets(attributedTargets),
+	'V1 · V3 × 2',
+	'backlink target details keep compact per-version counts',
+);
+assert.deepEqual(
+	collectBacklinkTargets(
+		{
+			'Arbitrary/First visual.canvas': 1,
+			'Arbitrary/Second thought.md': 3,
+		},
+		[
+			{ path: 'Arbitrary/First visual.canvas', version: 10 },
+			{ path: 'Arbitrary/Second thought.md', version: 2 },
+		],
+	),
+	[
+		{ count: 3, version: 2 },
+		{ count: 1, version: 10 },
+	],
+	'backlink targets use arbitrary registry paths and numeric V2/V10 ordering',
+);
+assertions += 1;
+
+const backlinkVault = new Vault([
+	'Topic.md',
+	'Topic V3.md',
+	'Source.md',
+]);
+const topicFile = backlinkVault.getFileByPath('Topic.md');
+const topicV3File = backlinkVault.getFileByPath('Topic V3.md');
+check(topicFile instanceof TFile, 'backlink fixture has representative file');
+check(topicV3File instanceof TFile, 'backlink fixture has registered V3 file');
+const groupedBacklinks = collectThemeBacklinks(
+	{
+		metadataCache: {
+			resolvedLinks: {
+				'Missing source.md': { 'Topic.md': 1 },
+				'Source.md': {
+					'Topic V3.md': 2,
+					'Topic.md': 1,
+					'Unrelated.md': 7,
+				},
+				'Unlinked.md': { 'Unrelated.md': 3 },
+			},
+		},
+		vault: backlinkVault,
+	} as never,
+	{
+		versions: [
+			{
+				file: topicFile,
+				path: 'Topic.md',
+				version: 1,
+			},
+			{
+				file: topicV3File,
+				path: 'Topic V3.md',
+				version: 3,
+			},
+		],
+	} as never,
+);
+equal(groupedBacklinks.length, 1, 'missing and unrelated backlink sources are omitted');
+equal(groupedBacklinks[0]?.source.path, 'Source.md', 'one source remains one row');
+equal(groupedBacklinks[0]?.count, 3, 'source row retains the aggregate backlink count');
+assert.deepEqual(
+	groupedBacklinks[0]?.targets,
+	[
+		{ count: 1, version: 1 },
+		{ count: 2, version: 3 },
+	],
+	'aggregate backlink row records the exact registered target versions',
+);
+assertions += 1;
+
 let warningState = false;
 setMenuItemWarning({
 	setWarning(value: boolean) {
@@ -304,6 +898,202 @@ equal(explicit.status, 'healthy', 'all explicit members make a healthy series');
 equal(explicit.topic, '实验 (V1)', 'real V1 basename represents the series');
 equal(explicit.versions[1].file.basename, '完全不同的名字', 'V2 keeps its real name');
 
+const visibilityVault = new Vault([
+	'Collapsed/Representative.md',
+	'Visible/Parallel.md',
+	'Root parallel.canvas',
+]) as unknown as Vault;
+const visibilityIndex = new VersionIndex(visibilityVault);
+visibilityIndex.rebuild([{
+	id: 'mixed-folder-visibility',
+	slots: [
+		{ member: memberAt(visibilityVault, 'Root parallel.canvas'), version: 3 },
+		{ member: memberAt(visibilityVault, 'Collapsed/Representative.md'), version: 1 },
+		{ member: memberAt(visibilityVault, 'Visible/Parallel.md'), version: 2 },
+	],
+}]);
+const visibilityGroup = visibilityIndex.getGroupById('mixed-folder-visibility');
+check(visibilityGroup, 'mixed-folder visibility fixture resolves');
+const originalVisibilityPaths = visibilityGroup.versions.map((member) => member.path);
+const visibilityPlan = buildFileExplorerVisibilityPlan(visibilityGroup);
+check(visibilityPlan, 'healthy mixed-folder series produces a visibility plan');
+equal(
+	visibilityPlan.representativePath,
+	'Collapsed/Representative.md',
+	'V1 remains the sole representative regardless of slot record order',
+);
+assert.deepEqual(
+	visibilityPlan.hiddenPaths,
+	['Visible/Parallel.md', 'Root parallel.canvas'],
+	'mixed-parent non-V1 members are hidden by their registered paths',
+);
+assertions += 1;
+const mountedWhileRepresentativeFolderIsCollapsed = new Set([
+	'Visible/Parallel.md',
+	'Root parallel.canvas',
+]);
+assert.deepEqual(
+	visibilityPlan.hiddenPaths.filter((path) =>
+		mountedWhileRepresentativeFolderIsCollapsed.has(path)),
+	['Visible/Parallel.md', 'Root parallel.canvas'],
+	'mounted non-representatives remain hidden when the V1 DOM row is unmounted',
+);
+assertions += 1;
+equal(
+	visibilityPlan.hiddenPaths.includes(visibilityPlan.representativePath),
+	false,
+	'the representative is never included in the hidden set',
+);
+assert.deepEqual(
+	visibilityGroup.versions.map((member) => member.path),
+	originalVisibilityPaths,
+	'visibility planning never rewrites or relocates registered member paths',
+);
+assertions += 1;
+equal(
+	buildFileExplorerVisibilityPlan({
+		...visibilityGroup,
+		status: 'incomplete',
+	}),
+	null,
+	'unresolved groups fail visible instead of hiding member rows',
+);
+equal(
+	buildFileExplorerVisibilityPlan({
+		...visibilityGroup,
+		status: 'invalid',
+	}),
+	null,
+	'invalid groups fail visible instead of hiding member rows',
+);
+
+function makeExplorerTitleFixture(path: string): {
+	badges: Array<{ attributes: Map<string, string>; text: string }>;
+	rowClasses: Set<string>;
+	title: unknown;
+	titleClasses: Set<string>;
+} {
+	const rowClasses = new Set<string>();
+	const titleClasses = new Set<string>();
+	const badges: Array<{ attributes: Map<string, string>; text: string }> = [];
+	return {
+		badges,
+		rowClasses,
+		title: {
+			addClass: (...classes: string[]) => {
+				for (const className of classes) {
+					titleClasses.add(className);
+				}
+			},
+			closest: () => ({
+				addClass: (...classes: string[]) => {
+					for (const className of classes) {
+						rowClasses.add(className);
+					}
+				},
+			}),
+			createSpan: (options: { text: string }) => {
+				const badge = {
+					attributes: new Map<string, string>(),
+					text: options.text,
+				};
+				badges.push(badge);
+				return {
+					setAttribute: (name: string, value: string) => {
+						badge.attributes.set(name, value);
+					},
+				};
+			},
+			dataset: { path },
+		},
+		titleClasses,
+	};
+}
+
+const explorerDecorator = new FileExplorerDecorator(
+	{ workspace: { getActiveFile: () => null } } as never,
+	visibilityIndex,
+	new VersionI18n('en'),
+);
+const explorerHarness = explorerDecorator as unknown as {
+	decorateGroup(group: typeof visibilityGroup, titles: Map<string, unknown>): void;
+	observeRoot(root: unknown): void;
+};
+const collapsedV2Title = makeExplorerTitleFixture('Visible/Parallel.md');
+const collapsedV3Title = makeExplorerTitleFixture('Root parallel.canvas');
+explorerHarness.decorateGroup(
+	visibilityGroup,
+	new Map([
+		['Root parallel.canvas', collapsedV3Title.title],
+		['Visible/Parallel.md', collapsedV2Title.title],
+	]),
+);
+equal(
+	collapsedV2Title.rowClasses.has('version-file-hidden'),
+	true,
+	'a mounted V2 row is hidden while the V1 folder is collapsed',
+);
+equal(
+	collapsedV3Title.rowClasses.has('version-file-hidden'),
+	true,
+	'a reordered mounted V3 row is hidden while the V1 row is absent',
+);
+const expandedV1Title = makeExplorerTitleFixture('Collapsed/Representative.md');
+explorerHarness.decorateGroup(
+	visibilityGroup,
+	new Map([
+		['Visible/Parallel.md', collapsedV2Title.title],
+		['Collapsed/Representative.md', expandedV1Title.title],
+		['Root parallel.canvas', collapsedV3Title.title],
+	]),
+);
+equal(
+	expandedV1Title.titleClasses.has('version-theme-entry'),
+	true,
+	'expanding the V1 folder restores the representative decoration',
+);
+equal(expandedV1Title.badges[0]?.text, '3', 'the remounted V1 badge counts real members');
+const remountedV1Title = makeExplorerTitleFixture('Collapsed/Representative.md');
+explorerHarness.decorateGroup(
+	visibilityGroup,
+	new Map([
+		['Collapsed/Representative.md', remountedV1Title.title],
+		['Root parallel.canvas', collapsedV3Title.title],
+		['Visible/Parallel.md', collapsedV2Title.title],
+	]),
+);
+equal(
+	remountedV1Title.titleClasses.has('version-theme-entry'),
+	true,
+	'a newly allocated V1 DOM row is decorated after virtualization remount',
+);
+equal(remountedV1Title.badges[0]?.text, '3', 'a remounted V1 receives one fresh count');
+
+let observedExplorerOptions: MutationObserverInit | null = null;
+class ExplorerMutationObserverFixture {
+	constructor(_callback: MutationCallback) {}
+	disconnect(): void {}
+	observe(_target: Node, options: MutationObserverInit): void {
+		observedExplorerOptions = options;
+	}
+}
+explorerHarness.observeRoot({
+	ownerDocument: {
+		defaultView: { MutationObserver: ExplorerMutationObserverFixture },
+	},
+});
+assert.deepEqual(
+	observedExplorerOptions,
+	{
+		attributeFilter: ['data-path'],
+		attributes: true,
+		childList: true,
+		subtree: true,
+	},
+	'File Explorer observes child remounts and virtualized data-path reuse only',
+);
+assertions += 1;
+
 const releaseVault = new Vault([
 	'Release V1.md',
 	'Release V2.md',
@@ -530,6 +1320,327 @@ equal(
 );
 const visualGroup = visualIndex.getGroupById('visual-notes');
 check(visualGroup, 'visual series remains available for move planning');
+
+const swapVault = new Vault() as unknown as Vault;
+const swapVaultMock = swapVault as unknown as {
+	add(path: string, content?: string): TFile;
+	create(path: string, content: string): Promise<TFile>;
+	files: Map<string, TFile>;
+};
+const swapV1 = swapVaultMock.add('Swap/Topic.md', '# Topic\n');
+const swapV2 = swapVaultMock.add(
+	'Swap/Board.canvas',
+	'{"nodes":[],"edges":[]}',
+);
+const swapV3 = swapVaultMock.add('Swap/Angle.md', '# Angle\n');
+const swapV4 = swapVaultMock.add(
+	'Swap/Sketch.excalidraw',
+	VALID_LEGACY_EXCALIDRAW,
+);
+const swapFiles = [swapV1, swapV2, swapV3, swapV4];
+const swapInitialRecords = [{
+	id: 'mixed-format-swap',
+	slots: [
+		{ member: memberRecordFromFile(swapV1), version: 1 },
+		{ member: memberRecordFromFile(swapV2), version: 2 },
+		{ member: memberRecordFromFile(swapV3), version: 3 },
+		{ member: memberRecordFromFile(swapV4), version: 4 },
+	],
+}];
+let swapPersistCalls = 0;
+let swapPersisted: ReturnType<VersionRegistry['getRecords']> | null = null;
+const swapRegistry = new VersionRegistry(
+	swapVault,
+	swapInitialRecords,
+	async (records) => {
+		swapPersistCalls += 1;
+		swapPersisted = records;
+	},
+);
+equal(
+	swapRegistry.index.getGroupById('mixed-format-swap')?.status,
+	'healthy',
+	'a Markdown, Canvas, Markdown, and Excalidraw series starts healthy',
+);
+const swapSnapshot = async (): Promise<Array<{
+	content: string;
+	ctime: number;
+	parent: string;
+	path: string;
+}>> => Promise.all(swapFiles.map(async (file) => ({
+	content: await swapVault.read(file),
+	ctime: file.stat.ctime,
+	parent: file.parent?.path ?? '',
+	path: file.path,
+})));
+const swapBefore = await swapSnapshot();
+const swapFileCountBefore = swapVaultMock.files.size;
+let swapCreateCalls = 0;
+let swapRenameCalls = 0;
+let swapTrashCalls = 0;
+swapVaultMock.create = async () => {
+	swapCreateCalls += 1;
+	throw new Error('pure slot swap must not create a file');
+};
+const swapApp = {
+	fileManager: {
+		renameFile: async () => {
+			swapRenameCalls += 1;
+		},
+		trashFile: async () => {
+			swapTrashCalls += 1;
+		},
+	},
+	vault: swapVault,
+} as never;
+let swapSavedCallbacks = 0;
+const swapModal = new VersionManagementModal(
+	swapApp,
+	swapRegistry,
+	swapV3,
+	'{{name}} (V{{version}})',
+	'series-folder',
+	new VersionI18n('en'),
+	() => {
+		swapSavedCallbacks += 1;
+	},
+);
+const swapModalHarness = swapModal as unknown as {
+	dropOnSlot(
+		targetVersion: number,
+		source: { kind: 'slot'; version: number },
+	): void;
+	renderAll(): void;
+	renderAllWithMotion(): void;
+	submit(): Promise<void>;
+};
+swapModalHarness.renderAll = () => undefined;
+swapModalHarness.renderAllWithMotion = () => undefined;
+swapModalHarness.dropOnSlot(4, { kind: 'slot', version: 3 });
+await swapModalHarness.submit();
+
+equal(swapPersistCalls, 1, 'a pure V3/V4 swap persists exactly once');
+equal(swapSavedCallbacks, 1, 'a successful pure swap reports one saved relationship');
+equal(swapCreateCalls, 0, 'a pure slot swap never creates a file');
+equal(swapRenameCalls, 0, 'a pure slot swap never moves or renames a file');
+equal(swapTrashCalls, 0, 'a pure slot swap never trashes a file');
+equal(
+	swapVaultMock.files.size,
+	swapFileCountBefore,
+	'a pure slot swap preserves the exact file count',
+);
+assert.deepEqual(
+	await swapSnapshot(),
+	swapBefore,
+	'a pure slot swap preserves every path, ctime, parent folder, and byte content',
+);
+assertions += 1;
+assert.deepEqual(
+	swapRegistry.getRecordById('mixed-format-swap')?.slots.map((slot) => [
+		slot.version,
+		slot.member?.path,
+	]),
+	[
+		[1, 'Swap/Topic.md'],
+		[2, 'Swap/Board.canvas'],
+		[3, 'Swap/Sketch.excalidraw'],
+		[4, 'Swap/Angle.md'],
+	],
+	'a pure swap changes only the V3/V4 slot-to-member mapping',
+);
+assertions += 1;
+check(swapPersisted, 'the swapped registry mapping was persisted');
+const reloadedSwapRegistry = new VersionRegistry(
+	swapVault,
+	swapPersisted,
+	async () => undefined,
+);
+assert.deepEqual(
+	reloadedSwapRegistry.getRecordById('mixed-format-swap')?.slots.map((slot) => [
+		slot.version,
+		slot.member?.path,
+	]),
+	swapRegistry.getRecordById('mixed-format-swap')?.slots.map((slot) => [
+		slot.version,
+		slot.member?.path,
+	]),
+	'saving and reloading preserves the exact swapped mapping',
+);
+assertions += 1;
+equal(
+	reloadedSwapRegistry.index.getGroupById('mixed-format-swap')?.status,
+	'healthy',
+	'the reloaded mixed-format swap remains healthy',
+);
+
+const managementCreationVault = new Vault() as unknown as Vault;
+const managementCreationMock = managementCreationVault as unknown as {
+	add(path: string, content?: string): TFile;
+};
+const managementV1 = managementCreationMock.add(
+	'Batch/Topic.md',
+	'# Existing V1\n',
+);
+let managementExcalCreateCalls = 0;
+const managementCreationApp = makeCreationApp(managementCreationVault, {
+	createDrawing: async (
+		filename: string,
+		folderPath: string,
+		content: string,
+	) => {
+		managementExcalCreateCalls += 1;
+		return managementCreationVault.create(
+			folderPath === '/' ? filename : `${folderPath}/${filename}`,
+			content,
+		);
+	},
+	getBlankDrawing: () => VALID_EXCALIDRAW_MARKDOWN,
+});
+let managementPersisted: ReturnType<VersionRegistry['getRecords']> | null = null;
+const managementCreationRegistry = new VersionRegistry(
+	managementCreationVault,
+	[],
+	async (records) => {
+		managementPersisted = records;
+	},
+);
+const managementCreationModal = new VersionManagementModal(
+	managementCreationApp,
+	managementCreationRegistry,
+	managementV1,
+	'{{name}} (V{{version}})',
+	'series-folder',
+	new VersionI18n('en'),
+	() => undefined,
+);
+const managementCreationHarness = managementCreationModal as unknown as {
+	addPendingVersion(): void;
+	renderAll(): void;
+	slots: Array<{
+		assignment: null | {
+			file?: TFile;
+			format?: 'markdown' | 'canvas' | 'excalidraw';
+			kind: 'existing' | 'missing' | 'new';
+			name?: string;
+		};
+		version: number;
+	}>;
+	submit(): Promise<void>;
+};
+managementCreationHarness.renderAll = () => undefined;
+managementCreationHarness.addPendingVersion();
+const pendingCanvas = managementCreationHarness.slots.find(
+	(slot) => slot.version === 2,
+)?.assignment;
+check(pendingCanvas?.kind === 'new', 'management stages a real V2 creation plan');
+pendingCanvas.format = 'canvas';
+managementCreationHarness.addPendingVersion();
+const pendingExcalidraw = managementCreationHarness.slots.find(
+	(slot) => slot.version === 3,
+)?.assignment;
+check(pendingExcalidraw?.kind === 'new', 'management stages a real V3 creation plan');
+pendingExcalidraw.format = 'excalidraw';
+await managementCreationHarness.submit();
+
+const createdManagementCanvas = managementCreationVault.getFileByPath(
+	'Batch/Topic (V2).canvas',
+);
+check(createdManagementCanvas, 'management creates the selected Canvas member');
+assert.deepEqual(
+	JSON.parse(await managementCreationVault.read(createdManagementCanvas)),
+	{ edges: [], nodes: [] },
+	'management uses the shared valid blank Canvas content',
+);
+assertions += 1;
+const createdManagementExcalidraw = managementCreationVault.getFileByPath(
+	'Batch/Topic (V3).excalidraw.md',
+);
+check(createdManagementExcalidraw, 'management creates the selected Excalidraw member');
+equal(
+	await managementCreationVault.read(createdManagementExcalidraw),
+	VALID_EXCALIDRAW_MARKDOWN,
+	'management delegates Excalidraw creation to the same public API service',
+);
+equal(managementExcalCreateCalls, 1, 'management invokes Excalidraw createDrawing once');
+check(managementPersisted, 'mixed-format management creation persists a registry');
+assert.deepEqual(
+	managementCreationRegistry.getRecords()[0]?.slots.map((slot) => [
+		slot.version,
+		slot.member?.path,
+	]),
+	[
+		[1, 'Batch/Topic.md'],
+		[2, 'Batch/Topic (V2).canvas'],
+		[3, 'Batch/Topic (V3).excalidraw.md'],
+	],
+	'management stores only the real mixed-format member paths in numbered slots',
+);
+assertions += 1;
+for (const slot of managementCreationRegistry.getRecords()[0]?.slots ?? []) {
+	assert.deepEqual(
+		Object.keys(slot.member ?? {}).sort(),
+		['identity', 'lastKnownName', 'path'],
+		'registry members retain path and identity metadata without a format field',
+	);
+	assertions += 1;
+}
+
+const managementCancelVault = new Vault(['Cancel/Board.canvas']) as unknown as Vault;
+const managementCancelV1 = managementCancelVault.getFileByPath(
+	'Cancel/Board.canvas',
+);
+check(managementCancelV1, 'management cancellation fixture has a Canvas V1');
+let managementCancelCreates = 0;
+let managementCancelSaves = 0;
+const managementCancelVaultMock = managementCancelVault as unknown as {
+	create(path: string, content: string): Promise<TFile>;
+};
+managementCancelVaultMock.create = async () => {
+	managementCancelCreates += 1;
+	throw new Error('cancelled management must not create');
+};
+const managementCancelRegistry = new VersionRegistry(
+	managementCancelVault,
+	[],
+	async () => {
+		managementCancelSaves += 1;
+	},
+);
+const managementCancelModal = new VersionManagementModal(
+	makeCreationApp(managementCancelVault),
+	managementCancelRegistry,
+	managementCancelV1,
+	'{{name}} (V{{version}})',
+	'series-folder',
+	new VersionI18n('en'),
+	() => undefined,
+);
+const managementCancelHarness = managementCancelModal as unknown as {
+	addPendingVersion(): void;
+	close(): void;
+	renderAll(): void;
+	slots: Array<{
+		assignment: null | { format?: string; kind: string };
+		version: number;
+	}>;
+};
+managementCancelHarness.renderAll = () => undefined;
+managementCancelHarness.addPendingVersion();
+equal(
+	managementCancelHarness.slots.find((slot) => slot.version === 2)
+		?.assignment?.format,
+	'canvas',
+	'a pending management file defaults to the currently opened Canvas format',
+);
+managementCancelHarness.close();
+equal(managementCancelCreates, 0, 'Cancel leaves every staged file uncreated');
+equal(managementCancelSaves, 0, 'Cancel leaves the registry unchanged');
+equal(
+	managementCancelVault.getFileByPath('Cancel/Board (V2).canvas'),
+	null,
+	'Cancel leaves no staged Canvas file in the vault',
+);
+
 const partialMovePlans = buildMovePlans(visualGroup, '白板所在');
 equal(
 	partialMovePlans.length,
@@ -859,6 +1970,13 @@ index.rebuild([{
 	],
 }]);
 equal(index.getGroupById('missing-v1')?.status, 'incomplete', 'missing V1 fails open');
+const missingV1Group = index.getGroupById('missing-v1');
+check(missingV1Group, 'missing V1 remains available for explicit repair');
+equal(
+	buildFileExplorerVisibilityPlan(missingV1Group),
+	null,
+	'a real missing-V1 relationship never hides its surviving mounted members',
+);
 
 index.rebuild([
 	{
@@ -1379,6 +2497,7 @@ equal(manyGaps.at(-1), 98, 'gap list remains bounded below V99');
 
 const normalized = normalizePluginData({
 	language: 'zh-CN',
+	schemaVersion: 1,
 	series: [{
 		id: 'kept',
 		slots: [
@@ -1418,6 +2537,94 @@ assert.deepEqual(
 	'schema-1 null slots migrate to absent numeric gaps',
 );
 assertions += 1;
+
+const schema3DamageVault = new Vault([
+	'Damaged/Representative.md',
+	'Damaged/Survivor.md',
+]) as unknown as Vault;
+const normalizedSchema3Damage = normalizePluginData({
+	schemaVersion: 3,
+	series: [{
+		id: 'schema3-damaged-member',
+		slots: [
+			{
+				member: memberAt(schema3DamageVault, 'Damaged/Representative.md'),
+				version: 1,
+			},
+			{
+				member: { lastKnownName: 'Broken V2', path: 42 },
+				version: 2,
+			},
+			{
+				member: memberAt(schema3DamageVault, 'Damaged/Survivor.md'),
+				version: 3,
+			},
+		],
+	}],
+});
+equal(
+	normalizedSchema3Damage.series.length,
+	1,
+	'schema 3 registry damage preserves the known relationship for repair',
+);
+assert.deepEqual(
+	normalizedSchema3Damage.series[0]?.slots.map((slot) => [
+		slot.version,
+		slot.member?.path ?? null,
+	]),
+	[
+		[1, 'Damaged/Representative.md'],
+		[2, null],
+		[3, 'Damaged/Survivor.md'],
+	],
+	'a malformed schema 3 member remains an unresolved slot instead of becoming a numeric gap',
+);
+assertions += 1;
+const schema3DamageIndex = new VersionIndex(schema3DamageVault);
+schema3DamageIndex.rebuild(normalizedSchema3Damage.series);
+const schema3DamageGroup = schema3DamageIndex.getGroupById(
+	'schema3-damaged-member',
+);
+check(schema3DamageGroup, 'schema 3 damaged relationship remains addressable');
+equal(
+	schema3DamageGroup.status,
+	'incomplete',
+	'a malformed schema 3 member makes the whole relationship fail open',
+);
+equal(
+	buildFileExplorerVisibilityPlan(schema3DamageGroup),
+	null,
+	'schema 3 registry damage never hides the surviving real files',
+);
+
+const schema3SingleVault = new Vault(['Damaged/Only survivor.md']) as unknown as Vault;
+const normalizedSchema3Single = normalizePluginData({
+	schemaVersion: 3,
+	series: [{
+		id: 'schema3-single-member',
+		slots: [{
+			member: memberAt(schema3SingleVault, 'Damaged/Only survivor.md'),
+			version: 1,
+		}],
+	}],
+});
+equal(
+	normalizedSchema3Single.series.length,
+	1,
+	'a current-schema single-member damaged record is retained for repair',
+);
+const schema3SingleIndex = new VersionIndex(schema3SingleVault);
+schema3SingleIndex.rebuild(normalizedSchema3Single.series);
+const schema3SingleGroup = schema3SingleIndex.getGroupById(
+	'schema3-single-member',
+);
+check(schema3SingleGroup, 'a current-schema single-member record stays addressable');
+equal(schema3SingleGroup.status, 'invalid', 'a one-member relationship fails open');
+equal(
+	buildFileExplorerVisibilityPlan(schema3SingleGroup),
+	null,
+	'a one-member damaged relationship never hides its surviving file',
+);
 equal(
 	normalized.releasedVersionDestination,
 	'series-folder',
@@ -1483,6 +2690,44 @@ const duplicateIds = normalizePluginData({
 	],
 });
 equal(new Set(duplicateIds.series.map((record) => record.id)).size, 2, 'duplicate technical IDs are repaired without guessing file membership');
+
+const damagedDuplicateIdVault = new Vault([
+	'Duplicate/A1.md',
+	'Duplicate/A2.md',
+	'Duplicate/B1.md',
+	'Duplicate/B2.md',
+]) as unknown as Vault;
+const damagedDuplicateIds = normalizePluginData({
+	schemaVersion: 3,
+	series: [
+		{ id: 'same-current-id', slots: [
+			{ member: memberAt(damagedDuplicateIdVault, 'Duplicate/A1.md'), version: 1 },
+			{ member: memberAt(damagedDuplicateIdVault, 'Duplicate/A2.md'), version: 2 },
+		] },
+		{ id: 'same-current-id', slots: [
+			{ member: memberAt(damagedDuplicateIdVault, 'Duplicate/B1.md'), version: 1 },
+			{ member: memberAt(damagedDuplicateIdVault, 'Duplicate/B2.md'), version: 2 },
+		] },
+	],
+});
+equal(
+	new Set(damagedDuplicateIds.series.map((record) => record.id)).size,
+	1,
+	'current-schema duplicate IDs remain visible as registry damage',
+);
+const damagedDuplicateIdIndex = new VersionIndex(damagedDuplicateIdVault);
+damagedDuplicateIdIndex.rebuild(damagedDuplicateIds.series);
+equal(
+	damagedDuplicateIdIndex.getGroups().length,
+	0,
+	'current-schema duplicate IDs make every affected relationship fail open',
+);
+assert.deepEqual(
+	damagedDuplicateIdIndex.getAllGroups().map((group) => group.status),
+	['invalid', 'invalid'],
+	'duplicate current-schema relationships are not silently assigned new identities',
+);
+assertions += 1;
 const repairChoices = filterAllowedSeries(
 	[
 		{ id: 'conflict-a' },

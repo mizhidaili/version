@@ -10,9 +10,36 @@ const FILE_TITLE_SELECTOR = '.nav-file-title[data-path]';
 
 /**
  * File Explorer has no public API for hiding individual rows or adding a badge.
- * Keep all DOM compatibility work isolated here and always fail open: if the
- * V1 row or a healthy series cannot be resolved, no member row is hidden.
+ * Keep all DOM compatibility work isolated here. Genuinely invalid or
+ * unresolved registry groups fail open, but a healthy group's visibility must
+ * not depend on whether its representative row is currently mounted (for
+ * example, while the V1 parent folder is collapsed).
  */
+export interface FileExplorerVisibilityPlan {
+	hiddenPaths: string[];
+	representativePath: string;
+}
+
+export function buildFileExplorerVisibilityPlan(
+	group: VersionGroup,
+): FileExplorerVisibilityPlan | null {
+	if (group.status !== 'healthy') {
+		return null;
+	}
+
+	const representative = getOverallVersion(group);
+	if (!representative) {
+		return null;
+	}
+
+	return {
+		hiddenPaths: group.versions
+			.filter((versionFile) => versionFile.path !== representative.path)
+			.map((versionFile) => versionFile.path),
+		representativePath: representative.path,
+	};
+}
+
 export class FileExplorerDecorator {
 	private destroyed = false;
 	private readonly observers = new Map<HTMLElement, MutationObserver>();
@@ -87,21 +114,13 @@ export class FileExplorerDecorator {
 		group: VersionGroup,
 		titlesByPath: Map<string, HTMLElement>,
 	): void {
-		const v1 = getOverallVersion(group);
-		if (!v1) {
+		const visibility = buildFileExplorerVisibilityPlan(group);
+		if (!visibility) {
 			return;
 		}
 
-		const v1Title = titlesByPath.get(v1.path);
-		if (!v1Title) {
-			return;
-		}
-
-		for (const versionFile of group.versions) {
-			if (versionFile.path === v1.path) {
-				continue;
-			}
-			const titleEl = titlesByPath.get(versionFile.path);
+		for (const hiddenPath of visibility.hiddenPaths) {
+			const titleEl = titlesByPath.get(hiddenPath);
 			if (!titleEl) {
 				continue;
 			}
@@ -112,13 +131,18 @@ export class FileExplorerDecorator {
 			row.addClass('version-file-hidden');
 		}
 
+		const v1Title = titlesByPath.get(visibility.representativePath);
+		if (!v1Title) {
+			return;
+		}
+
 		v1Title.addClass('version-theme-entry');
 		const activeFile = this.app.workspace.getActiveFile();
 		const activeGroup = activeFile
 			? this.index.getGroupForFile(activeFile)
 			: null;
 		if (
-			activeFile?.path !== v1.path &&
+			activeFile?.path !== visibility.representativePath &&
 			activeGroup?.key === group.key
 		) {
 			// Obsidian marks the real active member row with `is-active`. V2+
@@ -172,7 +196,12 @@ export class FileExplorerDecorator {
 		}
 
 		const observer = new Observer(() => this.queueRefresh());
-		observer.observe(root, { childList: true, subtree: true });
+		observer.observe(root, {
+			attributeFilter: ['data-path'],
+			attributes: true,
+			childList: true,
+			subtree: true,
+		});
 		this.observers.set(root, observer);
 	}
 

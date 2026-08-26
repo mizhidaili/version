@@ -54,10 +54,21 @@ export function normalizePluginData(value: unknown): VersionPluginData {
 	const releasedVersionDestination = value.releasedVersionDestination === 'vault-root'
 		? 'vault-root'
 		: 'series-folder';
+	const sourceSchema = Number.isInteger(value.schemaVersion)
+		? value.schemaVersion as number
+		: 1;
+	const preserveDamagedSlots = sourceSchema >= 2;
 	const normalizedSeries = Array.isArray(value.series)
-		? value.series.flatMap(normalizeSeriesRecord)
+		? value.series.flatMap((record) =>
+			normalizeSeriesRecord(record, preserveDamagedSlots),
+		)
 		: [];
-	const series = makeSeriesIdsUnique(normalizedSeries);
+	// Schema 1 did not guarantee unique technical IDs, so retain its explicit
+	// migration. In current schemas, a duplicate ID is registry damage: leave it
+	// intact for VersionIndex to mark both relationships invalid and fail open.
+	const series = preserveDamagedSlots
+		? normalizedSeries
+		: makeSeriesIdsUnique(normalizedSeries);
 
 	return {
 		filenameTemplate,
@@ -122,7 +133,10 @@ function clonePluginData(data: VersionPluginData): VersionPluginData {
 	};
 }
 
-function normalizeSeriesRecord(value: unknown): VersionSeriesRecord[] {
+function normalizeSeriesRecord(
+	value: unknown,
+	preserveDamagedSlots: boolean,
+): VersionSeriesRecord[] {
 	if (!isRecord(value) || typeof value.id !== 'string' || !value.id) {
 		return [];
 	}
@@ -131,22 +145,34 @@ function normalizeSeriesRecord(value: unknown): VersionSeriesRecord[] {
 		return [];
 	}
 
-	// Schema 1 used an explicit null member to mean a numeric gap. Schema 2
-	// represents a gap by the absence of that version number. This also keeps
-	// "a Version exists but has no note" as a draft-only, unsavable state.
+	// Schema 1 used an explicit null member to mean a numeric gap, so those nulls
+	// are migrated away. Schema 2+ represents a gap by absence; a present but
+	// malformed/null member is therefore registry damage and must survive as an
+	// unresolved sentinel so the whole relationship remains fail-open.
 	const slots = value.slots
-		.flatMap(normalizeSlotRecord)
-		.filter((slot) => slot.member !== null);
-	if (slots.length < 2) {
+		.flatMap((slot, index) =>
+			normalizeSlotRecord(slot, preserveDamagedSlots, index),
+		)
+		.filter((slot) => preserveDamagedSlots || slot.member !== null);
+	if (
+		slots.length < 2 &&
+		(!preserveDamagedSlots || !slots.some((slot) => slot.member !== null))
+	) {
 		return [];
 	}
 
 	return [{ id: value.id, slots }];
 }
 
-function normalizeSlotRecord(value: unknown): VersionSlotRecord[] {
+function normalizeSlotRecord(
+	value: unknown,
+	preserveDamagedSlots: boolean,
+	index: number,
+): VersionSlotRecord[] {
 	if (!isRecord(value) || !Number.isInteger(value.version)) {
-		return [];
+		return preserveDamagedSlots
+			? [{ member: null, version: -1 - index }]
+			: [];
 	}
 
 	const member = normalizeMemberRecord(value.member);

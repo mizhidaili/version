@@ -29,23 +29,45 @@
 	padding: 0;
 }
 
-.version-view-content {
-	--version-tab-face-offset: calc(
-		var(--version-tab-hit-width) - var(--version-tab-face-width)
-	);
+.version-view-container {
+	--version-rail-bottom-clearance: var(--size-4-6);
+	--version-rail-content-offset: var(--header-height, 0px);
+	--version-rail-edge-overlap: 1px;
+	--version-rail-max-height: 38rem;
+	--version-rail-top: var(--size-4-6);
 	--version-tab-face-width: 2rem;
+	--version-tab-face-offset: 0px;
 	--version-tab-gap: calc(var(--size-4-6) + var(--size-4-1));
 	--version-tab-height: 6rem;
-	--version-tab-hit-width: 2.75rem;
+	--version-tab-hit-width: var(--version-tab-face-width);
+	--version-rail-face-inline-inset: 0px;
+	--version-rail-inline-inset: var(--version-rail-face-inline-inset);
+	--version-tab-face-inline-end: 0px;
+	--version-tab-face-inline-start: 0px;
+	--version-tab-label-padding-inline-end: 0px;
+	--version-tab-label-padding-inline-start: 0px;
+	--version-visual-rail-lane-width: calc(
+		var(--version-tab-face-width) - var(--version-rail-edge-overlap)
+	);
+	position: relative;
+}
+
+.version-view-content {
 	position: relative;
 }
 
 .version-tabs-shell {
-	height: min(calc(100% - var(--size-4-12)), 38rem);
+	height: min(
+		calc(
+			100% - var(--version-rail-content-offset) - var(--version-rail-top) -
+				var(--version-rail-bottom-clearance)
+		),
+		var(--version-rail-max-height)
+	);
+	inset-inline-end: var(--version-rail-inline-inset);
 	pointer-events: none;
 	position: absolute;
-	right: 0;
-	top: var(--size-4-6);
+	top: calc(var(--version-rail-content-offset) + var(--version-rail-top));
 	z-index: 2;
 }
 
@@ -59,8 +81,13 @@
 	overflow-y: auto;
 	overscroll-behavior: contain;
 	padding: 1px 0 var(--size-4-2) var(--size-4-2);
-	pointer-events: auto;
-	scrollbar-width: thin;
+	pointer-events: none;
+	scrollbar-width: none;
+}
+
+.version-tabs::-webkit-scrollbar {
+	height: 0;
+	width: 0;
 }
 
 .version-tabs-overflow-cue {
@@ -98,43 +125,16 @@
 	width: var(--icon-xs);
 }
 
-/* Visual editors reserve a horizontal gutter for native right-side tools and
- * drawing input. Their Version rail still follows the same top-to-bottom rule
- * as Markdown; no private Canvas or Excalidraw descendant DOM is queried. */
-.version-view-content.version-view-type-canvas,
-.version-view-content.version-view-type-excalidraw {
-	--version-visual-rail-gutter: calc(var(--version-tab-hit-width) + var(--size-4-4));
+/* Every supported view reserves the same public-host lane. The 32px painted
+ * face and its hit target fill that lane from the content edge to the outer
+ * pane divider, so switching formats cannot move the rail. A one-pixel host
+ * overlap absorbs the visual-editor boundary seam without touching private
+ * Markdown, Canvas, or Excalidraw descendants. */
+.version-view-container > .version-view-content {
+	width: calc(100% - var(--version-visual-rail-lane-width));
 }
 
-/* Excalidraw's centered top toolbar can overflow its narrowed drawing wrapper
- * into the reserved rail gutter when the editor pane is narrow. The safe
- * offset is the fallback; sufficiently wide panes receive the same 24px top
- * anchor as Markdown and Canvas through a Version-owned responsive class. */
-.version-view-content.version-view-type-excalidraw .version-tabs-shell {
-	height: min(
-		calc(
-			100% - var(--size-4-16) - var(--size-4-4) - var(--size-4-6)
-		),
-		38rem
-	);
-	top: calc(var(--size-4-16) + var(--size-4-4));
-}
-
-.version-view-content.version-view-type-excalidraw.version-excalidraw-rail-top-aligned
-	.version-tabs-shell {
-	height: min(calc(100% - var(--size-4-12)), 38rem);
-	top: var(--size-4-6);
-}
-
-/* Reserve a real gutter instead of intercepting drawing input. The selector
- * depends only on Version-owned classes and the view's direct content child,
- * not on Canvas or Excalidraw's private descendant structure. */
-.version-view-content.version-view-type-canvas > :not(.version-tabs-shell),
-.version-view-content.version-view-type-excalidraw > :not(.version-tabs-shell) {
-	width: calc(100% - var(--version-visual-rail-gutter));
-}
-
-.version-view-content .version-tabs > button.version-tab {
+.version-view-container .version-tabs > button.version-tab {
 	--version-tab-border: var(--background-modifier-border);
 	--version-tab-fill: var(--background-primary-alt);
 	appearance: none;
@@ -156,34 +156,51 @@
 	line-height: 1;
 	min-height: var(--version-tab-height);
 	min-width: var(--version-tab-hit-width);
-	padding: 0 0 0 var(--version-tab-face-offset);
+	padding-block: 0;
+	padding-inline-end: var(--version-tab-label-padding-inline-end);
+	padding-inline-start: var(--version-tab-label-padding-inline-start);
+	pointer-events: auto;
 	position: relative;
 	transition: color 150ms ease;
 	white-space: nowrap;
 	width: var(--version-tab-hit-width);
 }
 
-.version-view-content .version-tabs > button.version-tab::before,
-.version-view-content .version-tabs > button.version-tab::after {
+.version-visually-hidden {
+	clip: rect(0 0 0 0);
+	clip-path: inset(50%);
+	height: 1px;
+	overflow: hidden;
+	position: absolute;
+	white-space: nowrap;
+	width: 1px;
+}
+
+.version-view-container .version-tabs > button.version-tab::before,
+.version-view-container .version-tabs > button.version-tab::after {
 	clip-path: polygon(0 11%, 100% 0, 100% 100%, 0 89%);
 	content: '';
 	pointer-events: none;
 	position: absolute;
 }
 
-.version-view-content .version-tabs > button.version-tab::before {
+.version-view-container .version-tabs > button.version-tab::before {
 	background: var(--version-tab-border);
-	inset: 0 0 0 var(--version-tab-face-offset);
+	inset-block: 0;
+	inset-inline-end: var(--version-tab-face-inline-end);
+	inset-inline-start: var(--version-tab-face-inline-start);
 	z-index: -2;
 }
 
-.version-view-content .version-tabs > button.version-tab::after {
+.version-view-container .version-tabs > button.version-tab::after {
 	background: var(--version-tab-fill);
-	inset: 1px 1px 1px calc(var(--version-tab-face-offset) + 1px);
+	inset-block: 1px;
+	inset-inline-end: calc(var(--version-tab-face-inline-end) + 1px);
+	inset-inline-start: calc(var(--version-tab-face-inline-start) + 1px);
 	z-index: -1;
 }
 
-.version-view-content .version-tabs > button.version-tab:hover {
+.version-view-container .version-tabs > button.version-tab:hover {
 	--version-tab-border: var(--background-modifier-border-hover);
 	--version-tab-fill: var(--background-modifier-hover);
 	background: transparent;
@@ -191,12 +208,12 @@
 	color: var(--text-normal);
 }
 
-.version-view-content .version-tabs > button.version-tab:focus-visible {
+.version-view-container .version-tabs > button.version-tab:focus-visible {
 	--version-tab-border: var(--interactive-accent);
 	outline: none;
 }
 
-.version-view-content .version-tabs > button.version-tab.is-active {
+.version-view-container .version-tabs > button.version-tab.is-active {
 	--version-tab-border: var(--interactive-accent);
 	--version-tab-fill: var(--interactive-accent);
 	background: transparent;
@@ -945,7 +962,25 @@
 }
 
 .version-management-new-name {
+	box-sizing: border-box;
+	min-width: 0;
 	width: 100%;
+}
+
+.version-management-new-fields {
+	display: grid;
+	gap: var(--size-4-2);
+	grid-template-columns: minmax(10rem, 1fr) minmax(7rem, auto);
+	min-width: min(22rem, 100%);
+}
+
+.version-management-new-format {
+	max-width: 10rem;
+}
+
+.version-management-prepare-blank {
+	font-size: var(--font-ui-smaller);
+	margin-block-start: var(--size-4-2);
 }
 
 .version-management-add-row {
@@ -1286,10 +1321,23 @@ body > .version-native-file-action-flyout .version-native-file-action:not(.is-wa
 }
 
 .version-backlinks-name {
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
 	min-width: 0;
+	text-align: start;
+}
+
+.version-backlinks-source {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+.version-backlinks-targets {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+	line-height: var(--line-height-tight);
 }
 
 .version-backlinks-count {
@@ -1461,6 +1509,15 @@ body > .version-native-file-action-flyout .version-native-file-action:not(.is-wa
 	.version-management-new-name {
 		box-sizing: border-box;
 		min-width: 0;
+	}
+
+	.version-management-new-fields {
+		grid-template-columns: minmax(0, 1fr);
+		min-width: 0;
+	}
+
+	.version-management-new-format {
+		max-width: 100%;
 	}
 
 	.version-management-file-path {

@@ -80,8 +80,13 @@ assert.match(
 );
 assert.match(
 	viewDecorator,
-	/existing\.tabsEl\.isConnected[\s\S]*?view\.contentEl\.contains\(existing\.tabsEl\)/u,
-	'Version controls must be recreated after a third-party view replaces its DOM',
+	/existing\.contentEl === view\.contentEl[\s\S]*?existing\.tabsEl\.isConnected[\s\S]*?view\.containerEl\.contains\(existing\.tabsEl\)/u,
+	'Version controls must rebind their host after a third-party view replaces its content DOM',
+);
+assert.match(
+	viewDecorator,
+	/view\.containerEl\.createDiv\(\{[\s\S]*?cls: 'version-tabs-shell'/u,
+	'The rail must be a Version-owned sibling on the stable public view container',
 );
 assert.match(
 	viewDecorator,
@@ -94,29 +99,89 @@ assert.match(
 	'Repeated compatibility refreshes must preserve stable version-tab nodes',
 );
 assert.match(
-	versionCss,
-	/\.version-view-content\.version-view-type-canvas,\s*\n\.version-view-content\.version-view-type-excalidraw\s*\{[\s\S]*?--version-visual-rail-gutter/u,
-	'Visual editors must share the same horizontal native-tool gutter',
-);
-assert.doesNotMatch(
-	versionCss,
-	/version-view-type-canvas \.version-tabs-shell/u,
-	'Canvas must inherit the same top-to-bottom rail anchor as Markdown',
-);
-assert.match(
-	versionCss,
-	/\.version-view-content\.version-view-type-excalidraw \.version-tabs-shell\s*\{[\s\S]*?38rem[\s\S]*?top:\s*calc\(var\(--size-4-16\) \+ var\(--size-4-4\)\)/u,
-	'Excalidraw must retain a narrow-pane fallback that clears its overflowing native toolbar',
-);
-assert.match(
-	versionCss,
-	/version-excalidraw-rail-top-aligned[\s\S]*?version-tabs-shell[\s\S]*?top:\s*var\(--size-4-6\)/u,
-	'Wide Excalidraw panes must share the regular 24px top anchor',
+	viewDecorator,
+	/const openLabel = this\.i18n\.t\('view\.openVersionAria'[\s\S]*?const tooltip = `[\s\S]*?view\.versionActions[\s\S]*?setTooltip\(button, tooltip, \{ placement: 'left' \}\)/u,
+	'Each concrete version button must use one Obsidian tooltip with open and context-action guidance',
 );
 assert.match(
 	viewDecorator,
-	/EXCALIDRAW_TOP_ALIGNMENT_MIN_WIDTH[\s\S]*?clientWidth\s*>=\s*EXCALIDRAW_TOP_ALIGNMENT_MIN_WIDTH[\s\S]*?EXCALIDRAW_TOP_ALIGNED_CLASS/u,
-	'Excalidraw rail clearance must respond to editor-pane width without querying private plugin DOM',
+	/const labelId = `version-tabs-label-[\s\S]*?cls: 'version-visually-hidden'[\s\S]*?'aria-labelledby': labelId/u,
+	'The version group must use a hidden accessible label instead of a hoverable generic label',
+);
+assert.match(
+	viewDecorator,
+	/controls\.labelEl\.textContent = this\.i18n\.t\('view\.versionsAria'\)/u,
+	'The hidden group label must refresh when the UI language changes',
+);
+assert.doesNotMatch(
+	viewDecorator,
+	/button\.title\s*=/u,
+	'Version tabs must not add a second browser-native hover label',
+);
+assert.doesNotMatch(
+	viewDecorator,
+	/cls: 'version-tabs',[\s\S]{0,180}?'aria-label': this\.i18n\.t\('view\.versionsAria'\)/u,
+	'The track itself must not expose the stray generic Versions hover label',
+);
+assert.match(
+	versionCss,
+	/\.version-view-container\s*\{[\s\S]*?--version-rail-content-offset:[\s\S]*?--version-rail-edge-overlap:[\s\S]*?--version-rail-max-height:[\s\S]*?--version-tab-face-width:[\s\S]*?--version-tab-face-offset:[\s\S]*?--version-tab-gap:[\s\S]*?--version-tab-height:[\s\S]*?--version-tab-hit-width:[\s\S]*?--version-rail-face-inline-inset:[\s\S]*?--version-rail-inline-inset:[\s\S]*?--version-visual-rail-lane-width:/u,
+	'Rail edge overlap, fixed face inset, host lane, bounds, and tab dimensions must be centralized as Version variables',
+);
+assert.match(
+	versionCss,
+	/--version-rail-edge-overlap:\s*1px;[\s\S]*?--version-tab-face-width:\s*2rem;[\s\S]*?--version-tab-face-offset:\s*0px;[\s\S]*?--version-tab-hit-width:\s*var\(--version-tab-face-width\);[\s\S]*?--version-rail-face-inline-inset:\s*0px;[\s\S]*?--version-rail-inline-inset:\s*var\(--version-rail-face-inline-inset\);[\s\S]*?--version-tab-face-inline-end:\s*0px;[\s\S]*?--version-tab-face-inline-start:\s*0px;[\s\S]*?--version-visual-rail-lane-width:\s*calc\(\s*var\(--version-tab-face-width\) - var\(--version-rail-edge-overlap\)\s*\);/u,
+	'The 32px face and hit target must fill the outer-edge lane, with only a one-pixel host overlap to absorb seams',
+);
+assert.match(
+	versionCss,
+	/\.version-tabs-shell\s*\{[\s\S]*?var\(--version-rail-max-height\)[\s\S]*?inset-inline-end:\s*var\(--version-rail-inline-inset\);[\s\S]*?pointer-events:\s*none;[\s\S]*?top:\s*calc\(var\(--version-rail-content-offset\) \+ var\(--version-rail-top\)\);/u,
+	'The inert sibling shell must use logical positioning relative to the public content area',
+);
+assert.match(
+	versionCss,
+	/\.version-tabs\s*\{[\s\S]*?pointer-events:\s*none;[\s\S]*?scrollbar-width:\s*none;/u,
+	'The scrollable track must hide its scrollbar and leave gaps inert',
+);
+assert.match(
+	versionCss,
+	/\.version-tabs::-webkit-scrollbar\s*\{[\s\S]*?height:\s*0;[\s\S]*?width:\s*0;/u,
+	'WebKit must hide the rail scrollbar while overflow cues communicate continuation',
+);
+assert.match(
+	versionCss,
+	/\.version-view-container \.version-tabs > button\.version-tab\s*\{[\s\S]*?pointer-events:\s*auto;/u,
+	'Only concrete version buttons may opt back into pointer input',
+);
+assert.match(
+	versionCss,
+	/\.version-visually-hidden\s*\{[\s\S]*?clip-path:\s*inset\(50%\);[\s\S]*?position:\s*absolute;[\s\S]*?width:\s*1px;/u,
+	'The group label must remain available to assistive technology without painting a tooltip target',
+);
+assert.doesNotMatch(
+	versionCss,
+	/\.version-view-container\.version-view-type-excalidraw\s*\{[^}]*--version-rail-top:/u,
+	'Excalidraw must not move the rail vertically when the open version changes format',
+);
+assert.match(
+	versionCss,
+	/\.version-view-container > \.version-view-content\s*\{[^}]*width:\s*calc\(100% - var\(--version-visual-rail-lane-width\)\);/u,
+	'Every supported public content host must reserve the same seam-free outer-edge lane',
+);
+assert.match(
+	viewDecorator,
+	/controls\.contentEl\.removeClass\('version-view-content'\)[\s\S]*?view\.containerEl\.removeClass\('version-view-container'\)[\s\S]*?view\.containerEl\.removeClass\(\.\.\.VERSION_VIEW_TYPE_CLASSES\)/u,
+	'Rail teardown must remove both the saved content hook and stable container hooks',
+);
+assert.doesNotMatch(
+	versionCss,
+	/\.version-view-content\.version-view-type-(?:canvas|excalidraw)\s*>\s*:not\(/u,
+	'Version must not resize direct Canvas or Excalidraw content children',
+);
+assert.doesNotMatch(
+	versionCss,
+	/\.(?:canvas-wrapper|canvas-controls|excalidraw-wrapper|FixedSideContainer)/u,
+	'Version layout CSS must not target Canvas or Excalidraw private descendants',
 );
 assert.match(
 	viewDecorator,
@@ -125,13 +190,8 @@ assert.match(
 );
 assert.match(
 	versionCss,
-	/\.version-view-content\.version-view-type-canvas > :not\(\.version-tabs-shell\),[\s\S]*?width:\s*calc\(100% - var\(--version-visual-rail-gutter\)\)/u,
-	'Visual editors must reserve a non-intercepting gutter for the version rail',
-);
-assert.match(
-	versionCss,
-	/\.version-view-content\s*\{[\s\S]*?--version-tab-face-width:\s*2rem;[\s\S]*?--version-tab-height:\s*6rem;[\s\S]*?--version-tab-hit-width:\s*2\.75rem;/u,
-	'The visible rail tabs must remain narrower than their accessible hit targets and taller than both',
+	/\.version-view-container\s*\{[\s\S]*?--version-tab-face-width:\s*2rem;[\s\S]*?--version-tab-height:\s*6rem;[\s\S]*?--version-tab-hit-width:\s*var\(--version-tab-face-width\);/u,
+	'The fixed 32px rail button must remain narrow while its 96px height keeps each version easy to target',
 );
 assert.match(
 	versionCss,
@@ -150,11 +210,6 @@ assert.match(
 );
 assert.match(
 	versionCss,
-	/\.version-tabs-shell\s*\{[\s\S]*?height:\s*min\([\s\S]*?38rem\);[\s\S]*?pointer-events:\s*none;[\s\S]*?top:\s*var\(--size-4-6\);/u,
-	'V1 must start from a fixed upper anchor while the regular rail fits five complete tabs',
-);
-assert.match(
-	versionCss,
 	/\.version-tabs-overflow-cue\.is-visible[\s\S]*?\.version-tabs-overflow-cue\.is-up[\s\S]*?\.version-tabs-overflow-cue\.is-down/u,
 	'Overflowing rails must expose theme-aware continuation cues in both directions',
 );
@@ -165,12 +220,22 @@ assert.match(
 );
 assert.match(
 	versionCss,
-	/\.version-view-content \.version-tabs > button\.version-tab::before,[\s\S]*?clip-path:\s*polygon\(0 11%, 100% 0, 100% 100%, 0 89%\);/u,
+	/\.version-view-container \.version-tabs > button\.version-tab::before,[\s\S]*?clip-path:\s*polygon\(0 11%, 100% 0, 100% 100%, 0 89%\);/u,
 	'The tab face must use the sketch\'s vertically oriented, symmetric outward trapezoid',
 );
 assert.match(
 	versionCss,
-	/\.version-view-content \.version-tabs > button\.version-tab\s*\{[\s\S]*?appearance:\s*none;[\s\S]*?background:\s*transparent;[\s\S]*?background-image:\s*none;[\s\S]*?border:\s*0;[\s\S]*?box-shadow:\s*none;/u,
+	/\.version-view-container \.version-tabs > button\.version-tab\s*\{[\s\S]*?padding-inline-end:\s*var\(--version-tab-label-padding-inline-end\);[\s\S]*?padding-inline-start:\s*var\(--version-tab-label-padding-inline-start\);/u,
+	'The version label must stay centered in the shared painted face and hit target',
+);
+assert.match(
+	versionCss,
+	/button\.version-tab::before\s*\{[\s\S]*?inset-inline-end:\s*var\(--version-tab-face-inline-end\);[\s\S]*?inset-inline-start:\s*var\(--version-tab-face-inline-start\);[\s\S]*?button\.version-tab::after\s*\{[\s\S]*?inset-inline-end:\s*calc\(var\(--version-tab-face-inline-end\) \+ 1px\);[\s\S]*?inset-inline-start:\s*calc\(var\(--version-tab-face-inline-start\) \+ 1px\);/u,
+	'Both trapezoid layers must use the shared logical face offsets',
+);
+assert.match(
+	versionCss,
+	/\.version-view-container \.version-tabs > button\.version-tab\s*\{[\s\S]*?appearance:\s*none;[\s\S]*?background:\s*transparent;[\s\S]*?background-image:\s*none;[\s\S]*?border:\s*0;[\s\S]*?box-shadow:\s*none;/u,
 	'Community themes must not expose the rectangular accessible hit target around a trapezoid',
 );
 assert.match(
@@ -178,6 +243,87 @@ assert.match(
 	/@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.version-hover-preview\.popover[\s\S]*?animation:\s*none/u,
 	'Hover previews must respect reduced-motion preferences',
 );
+
+const versionFileCreation = readPlugin('src/version-file-creation.ts');
+const versionFileCreationMessage = readPlugin(
+	'src/version-file-creation-message.ts',
+);
+const versionFileCreationTransaction = readPlugin(
+	'src/version-file-creation-transaction.ts',
+);
+const createVersionModal = readPlugin('src/ui/create-version-modal.ts');
+const managementCreation = readPlugin('src/ui/version-management-modal.ts');
+assert.match(
+	versionFileCreation,
+	/type VersionFileFormat = 'markdown' \| 'canvas' \| 'excalidraw'/u,
+	'Every creation entry point must share the same closed format union',
+);
+assert.match(
+	versionFileCreation,
+	/VERSION_FILE_SUFFIXES[\s\S]*?markdown: '\.md'[\s\S]*?canvas: '\.canvas'[\s\S]*?excalidraw: '\.excalidraw\.md'/u,
+	'The shared service must own canonical suffixes instead of duplicating them in UI code',
+);
+assert.match(
+	versionFileCreation,
+	/getBlankCanvasContent\(\)[\s\S]*?nodes: \[\], edges: \[\]/u,
+	'Canvas creation must write a valid empty Canvas document',
+);
+assert.match(
+	versionFileCreation,
+	/switch \(format\)[\s\S]*?case 'markdown':[\s\S]*?case 'canvas':[\s\S]*?case 'excalidraw':[\s\S]*?prepareExcalidrawContent\(app\)/u,
+	'The shared preparation service must handle all three formats explicitly',
+);
+assert.match(
+	versionFileCreation,
+	/prepareExcalidrawContent\(app: App\)[\s\S]*?getEnabledExcalidrawPlugin\(app\)[\s\S]*?plugin\.getBlankDrawing\(\)[\s\S]*?isValidExcalidrawMarkdown\(content\)[\s\S]*?isValidLegacyExcalidrawJson\(content\)/u,
+	'Excalidraw creation must obtain and validate a real blank payload before writing',
+);
+assert.match(
+	versionFileCreation,
+	/getEnabledExcalidrawPlugin\(app: App\)[\s\S]*?enabledPlugins\?\.has\(EXCALIDRAW_PLUGIN_ID\)[\s\S]*?isExcalidrawPluginApi\(plugin\)/u,
+	'Excalidraw creation must require an enabled plugin exposing the expected API',
+);
+assert.match(
+	versionFileCreationTransaction,
+	/prepareVersionFile\(app, options\)[\s\S]*?createPreparedVersionFile\(app, prepared\)[\s\S]*?await register\(file\)[\s\S]*?rollbackCreatedFilesIfUnchanged[\s\S]*?expectedContent: prepared\.content[\s\S]*?openError/u,
+	'Creation must have explicit prepare, create, register, content-safe rollback, and non-destructive open-failure boundaries',
+);
+assert.match(
+	versionFileCreationMessage,
+	/ExcalidrawPluginUnavailable[\s\S]*?ExcalidrawApiUnavailable[\s\S]*?create\.excalidrawUnavailable[\s\S]*?InvalidExcalidrawContent[\s\S]*?create\.excalidrawPreparationFailed/u,
+	'Excalidraw dependency and payload failures must use localized user-facing messages',
+);
+assert.match(
+	createVersionModal,
+	/addOption\('markdown'[\s\S]*?addOption\('canvas'[\s\S]*?addOption\('excalidraw'[\s\S]*?onCreate\(filename, this\.format\)/u,
+	'The editor creation modal must expose all formats before invoking its shared callback',
+);
+assert.match(
+	viewDecorator,
+	/detectVersionFileFormat\(view\.file \?\? v1\.file\) \?\? 'markdown'[\s\S]*?\(filename, format\) => this\.createSpecificVersion[\s\S]*?createAndRegisterVersionFile/u,
+	'Editor maximum and gap creation must default to the open member format and use the shared transaction',
+);
+assert.match(
+	managementCreation,
+	/VERSION_FILE_FORMAT_OPTIONS[\s\S]*?value: 'markdown'[\s\S]*?value: 'canvas'[\s\S]*?value: 'excalidraw'/u,
+	'Version management must expose the same three creation formats',
+);
+assert.match(
+	managementCreation,
+	/this\.defaultNewFormat = currentFile[\s\S]*?detectVersionFileFormat\(currentFile\) \?\? 'markdown'[\s\S]*?slot\.assignment = \{[\s\S]*?format: this\.defaultNewFormat,[\s\S]*?kind: 'new'/u,
+	'New management assignments must remain staged and inherit the current member format by default',
+);
+assert.match(
+	managementCreation,
+	/private async submit\(\)[\s\S]*?prepareVersionFile\(this\.app[\s\S]*?createPreparedVersionFile[\s\S]*?saveSeriesSlots[\s\S]*?rollbackCreatedFilesIfUnchanged/u,
+	'Management Done must use the shared service and retain compensation for failures before relationship commit',
+);
+assert.doesNotMatch(
+	managementCreation,
+	/\.vault\.create\(/u,
+	'Version management must not bypass the shared creation service with direct vault writes',
+);
+
 const main = readPlugin('src/main.ts');
 const settingsSource = readPlugin('src/settings.ts');
 assert.match(
@@ -187,8 +333,13 @@ assert.match(
 );
 assert.match(
 	settingsSource,
-	/private getVersionSettingDefinitions\(\)[\s\S]*?const definitions = this\.getVersionSettingDefinitions\(\)/u,
-	'Setting rows must remain internal to the single grouped renderer',
+	/getSettingDefinitions\(\): SettingDefinitionItem<VersionSettingKey>\[\][\s\S]*?const definitions = this\.getVersionSettingDefinitions\(\)[\s\S]*?items: definitions/u,
+	'The single declarative group renderer must consume the internal setting definitions',
+);
+assert.match(
+	settingsSource,
+	/private getVersionSettingDefinitions\(\): VersionSettingDefinitionItem<[\s\S]*?return \[/u,
+	'Setting row definitions must remain private to the grouped renderer',
 );
 assert.doesNotMatch(
 	settingsSource,
@@ -253,23 +404,23 @@ assert.match(
 const readme = readPlugin('README.md');
 assert.match(
 	readme,
-	/Show current file in File Explorer[\s\S]*?Show Vn in Version management/u,
-	'English documentation must disclose the native reveal boundary and exact Version-owned fallback',
+	/every version managed by Multi-Version Notes is an independent, ordinary vault file[\s\S]*?Disabling or uninstalling the plugin does not change the contents/u,
+	'English documentation must preserve ordinary-file readability when Version is unavailable',
 );
 assert.match(
 	readme,
-	/在文件列表中显示当前文件[\s\S]*?在版本管理中显示 Vn/u,
-	'Chinese documentation must mirror the native reveal boundary and exact Version-owned fallback',
+	/每一个版本，本质上都是一篇单独的仓库文件[\s\S]*?停用或卸载插件，也不会影响这些文件的内容/u,
+	'Chinese documentation must preserve ordinary-file readability when Version is unavailable',
 );
 assert.match(
 	readme,
-	/Version creates no\s+virtual topic file and does not replace member filenames/u,
-	'English documentation must preserve real member filenames instead of promising a virtual title',
+	/does not infer relationships from filenames[\s\S]*?or rewrite note contents[\s\S]*?fails open/u,
+	'English documentation must preserve explicit membership and fail-open semantics',
 );
 assert.match(
 	readme,
-	/Version 不创建虚拟主题文件，\s*\n\s*也不替换成员文件名/u,
-	'Chinese documentation must preserve real member filenames instead of promising a virtual title',
+	/不会根据文件名猜测关系[\s\S]*?不会改写笔记正文[\s\S]*?优先恢复文件的可见性/u,
+	'Chinese documentation must preserve explicit membership and fail-open semantics',
 );
 const acceptanceMatrix = readPlugin('docs/acceptance-matrix.md');
 assert.match(
@@ -279,8 +430,28 @@ assert.match(
 );
 assert.match(
 	acceptanceMatrix,
-	/Current `npm test` passes 215 model assertions and 217 keys across four locales/u,
-	'Acceptance evidence must not retain obsolete test counts',
+	/223 typed keys have exact key and placeholder parity across all four locales/u,
+	'Acceptance evidence must retain the actual current locale key count',
+);
+assert.match(
+	acceptanceMatrix,
+	/Current `npm test` passes its model\/registry suite and verifies 223 keys across four locales[\s\S]*?exact model assertion total is emitted by the runner rather than duplicated here/u,
+	'Acceptance evidence must not duplicate a fast-changing model assertion total',
+);
+assert.match(
+	acceptanceMatrix,
+	/Current follow-up candidate runtime UI \| not verified/u,
+	'Static and model validation must not be reported as final human UI acceptance',
+);
+assert.match(
+	acceptanceMatrix,
+	/File Explorer folding, virtualization, and failure visibility \| partial[\s\S]*?live folder folding[\s\S]*?pending/u,
+	'File Explorer source/model evidence must retain its live remount acceptance gate',
+);
+assert.match(
+	acceptanceMatrix,
+	/Theme-level backlink calculation \| partial[\s\S]*?registry-mapped target versions[\s\S]*?modal rendering\/click acceptance remains pending/u,
+	'Backlink target attribution must remain separate from modal UI acceptance',
 );
 assert.match(
 	acceptanceMatrix,
@@ -306,8 +477,23 @@ for (const boundary of [
 		acceptanceMatrix,
 		new RegExp(`${escapeRegExp(boundary)} \\| public API limitation`, 'u'),
 		`Acceptance matrix must retain public API boundary: ${boundary}`,
-	);
+		);
 }
+assert.match(
+	acceptanceMatrix,
+	/Reveal a hidden V2\+ row in the native File Explorer \| public API limitation[\s\S]*?Fallback: \*\*Show Vn in Version management…\*\*/u,
+	'The native reveal limitation must retain an exact Version-owned fallback',
+);
+assert.match(
+	acceptanceMatrix,
+	/Add pending blank version \| partial[\s\S]*?Markdown\/Canvas\/Excalidraw format[\s\S]*?live mixed-format management acceptance remains pending/u,
+	'Mixed-format staging evidence must retain its live management acceptance gate',
+);
+assert.match(
+	acceptanceMatrix,
+	/Markdown, Canvas, and Excalidraw rails grow from the top \| partial[\s\S]*?32px face-and-hit width[\s\S]*?reserves? `face width - 1px overlap`[\s\S]*?No private drawing descendant is selected or restyled[\s\S]*?all occupied screenshot x=1040\.\.1066[\s\S]*?active tops normalize to y=93\.\.94[\s\S]*?x=1039 was light antialias rather than a dark seam[\s\S]*?outer antialias at x=1067 directly met the divider\/sidebar beginning at x=1068[\s\S]*?library control was opened and closed successfully[\s\S]*?narrower horizontal hit width especially needs touch acceptance/u,
+	'Rail evidence must retain both the targeted live geometry result and the wider acceptance gate',
+);
 const notePreview = readPlugin('src/ui/note-preview.ts');
 assert.match(notePreview, /endsWith\('\.excalidraw\.md'\)/u);
 assert.match(
@@ -447,7 +633,21 @@ assert.match(
 const fileExplorer = readPlugin('src/ui/file-explorer-decorator.ts');
 const deleteVersionsModal = readPlugin('src/ui/delete-versions-modal.ts');
 assert.match(fileExplorer, /no public API for hiding individual rows/u);
-assert.match(fileExplorer, /const v1Title = titlesByPath\.get\(v1\.path\);[\s\S]*?if \(!v1Title\) \{\s*return;/u);
+assert.match(
+	fileExplorer,
+	/buildFileExplorerVisibilityPlan[\s\S]*?group\.status !== 'healthy'[\s\S]*?getOverallVersion\(group\)[\s\S]*?hiddenPaths: group\.versions/u,
+	'File Explorer visibility must derive from healthy registry groups and the registered V1 mapping',
+);
+assert.match(
+	fileExplorer,
+	/for \(const hiddenPath of visibility\.hiddenPaths\)[\s\S]*?row\.addClass\('version-file-hidden'\)[\s\S]*?const v1Title = titlesByPath\.get\(visibility\.representativePath\)[\s\S]*?if \(!v1Title\) \{\s*return;/u,
+	'Mounted non-V1 rows must be hidden before the optional V1 DOM decoration is attempted',
+);
+assert.match(
+	fileExplorer,
+	/observer\.observe\(root, \{[\s\S]*?attributeFilter: \['data-path'\],[\s\S]*?attributes: true,[\s\S]*?childList: true,[\s\S]*?subtree: true/u,
+	'File Explorer refreshes must observe virtualized data-path reuse as well as mount changes',
+);
 assert.match(
 	fileExplorer,
 	/activeGroup\?\.key === group\.key[\s\S]*?v1Title\.addClass\('is-active', 'version-theme-active'\)/u,
@@ -567,7 +767,7 @@ const catalogs = {
 	ja: readCatalog('src/locales/ja.ts', 'JA'),
 };
 const keyCount = Object.keys(catalogs.en).length;
-assert.equal(keyCount, 217);
+assert.equal(keyCount, 223);
 for (const [language, catalog] of Object.entries(catalogs)) {
 	assert.deepEqual(
 		Object.keys(catalog).sort(),

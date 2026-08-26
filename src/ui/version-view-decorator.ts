@@ -4,13 +4,11 @@ import {
 	MarkdownView,
 	Menu,
 	Notice,
-	normalizePath,
 	setIcon,
+	setTooltip,
 	TFile,
 } from 'obsidian';
 import { VersionI18n } from '../i18n';
-import { rollbackCreatedBlankFiles } from '../created-file-rollback';
-import { captureFile, CapturedFile } from '../captured-file';
 import {
 	formatVersionFilename,
 	getOverallVersion,
@@ -24,11 +22,26 @@ import {
 import { VersionRegistry } from '../version-registry';
 import { isVersionableFile } from '../version-file-types';
 import { setMenuItemWarning } from '../menu-item-warning';
+import {
+	detectVersionFileFormat,
+	stripVersionFileSuffix,
+	VersionFileCreationError,
+	VersionFileCreationErrorCode,
+	type VersionFileFormat,
+} from '../version-file-creation';
+import { getVersionFileCreationErrorMessage } from '../version-file-creation-message';
+import {
+	createAndRegisterVersionFile,
+	type RegisteredVersionFileResult,
+	VersionFileRegistrationError,
+} from '../version-file-creation-transaction';
 import { CreateVersionModal } from './create-version-modal';
 
 interface ViewControls {
 	actionEl: HTMLElement;
 	backlinksEl: HTMLElement;
+	contentEl: HTMLElement;
+	labelEl: HTMLElement;
 	manageEl: HTMLElement;
 	railEl: HTMLElement;
 	resizeObserver: ResizeObserver;
@@ -42,12 +55,10 @@ const VERSION_VIEW_TYPE_CLASSES = [
 	'version-view-type-excalidraw',
 ] as const;
 
-const EXCALIDRAW_TOP_ALIGNED_CLASS = 'version-excalidraw-rail-top-aligned';
-const EXCALIDRAW_TOP_ALIGNMENT_MIN_WIDTH = 48 * 16;
-
 export class VersionViewDecorator {
 	private readonly controls = new Map<FileView, ViewControls>();
 	private readonly standaloneActions = new Map<FileView, HTMLElement>();
+	private nextLabelId = 0;
 
 	constructor(
 		private readonly app: App,
@@ -136,6 +147,7 @@ export class VersionViewDecorator {
 
 	private renderControls(view: FileView, group: VersionGroup): void {
 		const controls = this.ensureControls(view);
+		controls.labelEl.textContent = this.i18n.t('view.versionsAria');
 		const signature = JSON.stringify([
 			group.id,
 			...group.versions.map((member) => [member.version, member.path]),
@@ -187,51 +199,65 @@ export class VersionViewDecorator {
 		versionFile: VersionFile,
 	): void {
 		button.textContent = `V${versionFile.version}`;
-		button.ariaLabel = this.i18n.t('view.openVersionAria', {
+		const openLabel = this.i18n.t('view.openVersionAria', {
 			topic: group.topic,
 			version: versionFile.version,
 		});
-		button.title = this.i18n.t('view.versionActions');
+		const tooltip = `${openLabel} · ${this.i18n.t('view.versionActions')}`;
+		button.ariaLabel = tooltip;
+		button.removeAttribute('title');
+		setTooltip(button, tooltip, { placement: 'left' });
 		const isActive = view.file?.path === versionFile.path;
 		button.classList.toggle('is-active', isActive);
 		button.setAttribute('aria-pressed', String(isActive));
 	}
 
 	private ensureControls(view: FileView): ViewControls {
-		this.applyViewTypeClass(view);
-		this.updateVisualRailAnchor(view);
 		const existing = this.controls.get(view);
 		if (
 			existing &&
+			existing.contentEl === view.contentEl &&
 			existing.tabsEl.isConnected &&
-			view.contentEl.contains(existing.tabsEl) &&
+			view.containerEl.contains(existing.tabsEl) &&
 			existing.railEl.isConnected &&
+			existing.labelEl.isConnected &&
 			existing.actionEl.isConnected &&
 			existing.backlinksEl.isConnected &&
 			existing.manageEl.isConnected
 		) {
+			this.applyViewTypeClass(view);
 			return existing;
 		}
 		if (existing) {
 			// Some third-party views (notably Excalidraw) replace their content
-			// element after the initial file-open event. Discard the detached
-			// controls instead of returning a stale cached set.
+			// element after the initial file-open event. Rebuild the host binding
+			// so the lane and ResizeObserver never remain attached to stale DOM.
 			existing.actionEl.remove();
 			existing.backlinksEl.remove();
 			existing.manageEl.remove();
 			existing.resizeObserver.disconnect();
 			existing.railEl.remove();
+			existing.contentEl.removeClass('version-view-content');
+			view.containerEl.removeClass('version-view-container');
+			view.containerEl.removeClass(...VERSION_VIEW_TYPE_CLASSES);
 			this.controls.delete(view);
 		}
 
+		this.applyViewTypeClass(view);
 		view.contentEl.addClass('version-view-content');
-		const railEl = view.contentEl.createDiv({
+		const railEl = view.containerEl.createDiv({
 			cls: 'version-tabs-shell',
+		});
+		const labelId = `version-tabs-label-${++this.nextLabelId}`;
+		const labelEl = railEl.createSpan({
+			cls: 'version-visually-hidden',
+			text: this.i18n.t('view.versionsAria'),
+			attr: { id: labelId },
 		});
 		const tabsEl = railEl.createDiv({
 			cls: 'version-tabs',
 			attr: {
-				'aria-label': this.i18n.t('view.versionsAria'),
+				'aria-labelledby': labelId,
 				role: 'group',
 			},
 		});
@@ -278,10 +304,11 @@ export class VersionViewDecorator {
 		const controls: ViewControls = {
 			actionEl,
 			backlinksEl,
+			contentEl: view.contentEl,
+			labelEl,
 			manageEl,
 			railEl,
 			resizeObserver: new ResizeObserver(() => {
-				this.updateVisualRailAnchor(view);
 				this.updateOverflowCues(controls);
 			}),
 			scrollDownCueEl,
@@ -293,6 +320,7 @@ export class VersionViewDecorator {
 		}, { passive: true });
 		controls.resizeObserver.observe(tabsEl);
 		controls.resizeObserver.observe(view.contentEl);
+		controls.resizeObserver.observe(view.containerEl);
 		this.controls.set(view, controls);
 		return controls;
 	}
@@ -334,31 +362,25 @@ export class VersionViewDecorator {
 		controls.manageEl.remove();
 		controls.resizeObserver.disconnect();
 		controls.railEl.remove();
-		view.contentEl.removeClass('version-view-content');
-		view.contentEl.removeClass(...VERSION_VIEW_TYPE_CLASSES);
-		view.contentEl.removeClass(EXCALIDRAW_TOP_ALIGNED_CLASS);
+		controls.contentEl.removeClass('version-view-content');
+		if (controls.contentEl !== view.contentEl) {
+			view.contentEl.removeClass('version-view-content');
+		}
+		view.containerEl.removeClass('version-view-container');
+		view.containerEl.removeClass(...VERSION_VIEW_TYPE_CLASSES);
 		this.controls.delete(view);
 	}
 
 	private applyViewTypeClass(view: FileView): void {
+		view.containerEl.addClass('version-view-container');
+		view.containerEl.removeClass(...VERSION_VIEW_TYPE_CLASSES);
 		view.contentEl.removeClass(...VERSION_VIEW_TYPE_CLASSES);
-		view.contentEl.removeClass(EXCALIDRAW_TOP_ALIGNED_CLASS);
 		const viewType = view.getViewType().toLocaleLowerCase();
 		if (viewType === 'canvas') {
-			view.contentEl.addClass('version-view-type-canvas');
+			view.containerEl.addClass('version-view-type-canvas');
 		} else if (viewType.includes('excalidraw')) {
-			view.contentEl.addClass('version-view-type-excalidraw');
+			view.containerEl.addClass('version-view-type-excalidraw');
 		}
-	}
-
-	private updateVisualRailAnchor(view: FileView): void {
-		const canShareRegularTopAnchor =
-			view.getViewType().toLocaleLowerCase().includes('excalidraw') &&
-			view.contentEl.clientWidth >= EXCALIDRAW_TOP_ALIGNMENT_MIN_WIDTH;
-		view.contentEl.classList.toggle(
-			EXCALIDRAW_TOP_ALIGNED_CLASS,
-			canShareRegularTopAnchor,
-		);
 	}
 
 	private ensureStandaloneAction(view: FileView, repair: boolean): void {
@@ -533,7 +555,7 @@ export class VersionViewDecorator {
 		try {
 			defaultFilename = formatVersionFilename(
 				this.getFilenameTemplate(),
-				v1.file.basename,
+				stripVersionFileSuffix(v1.file.name),
 				version,
 			);
 		} catch (error) {
@@ -546,11 +568,13 @@ export class VersionViewDecorator {
 			this.app,
 			version,
 			defaultFilename,
+			detectVersionFileFormat(view.file ?? v1.file) ?? 'markdown',
 			fillsGap,
-			(filename) => this.createSpecificVersion(
+			(filename, format) => this.createSpecificVersion(
 				view,
 				version,
 				filename,
+				format,
 			),
 			this.i18n,
 		).open();
@@ -578,6 +602,7 @@ export class VersionViewDecorator {
 		view: FileView,
 		version: number,
 		filename: string,
+		format: VersionFileFormat,
 	): Promise<boolean> {
 		if (!view.file || version < 1 || version > MAX_VERSION) {
 			new Notice(this.i18n.t('view.range', { version: MAX_VERSION }));
@@ -594,63 +619,77 @@ export class VersionViewDecorator {
 			return false;
 		}
 
-		const path = normalizePath(
-			group.folder
-				? `${group.folder}/${filename}.md`
-				: `${filename}.md`,
-		);
-
-		if (this.app.vault.getAbstractFileByPath(path)) {
-			const existing = this.app.vault.getFileByPath(path);
-			const owner = existing ? this.index.getGroupForFile(existing) : null;
-			const ownerMember = owner?.versions.find((member) => member.path === path);
-			new Notice(
-				owner && ownerMember
-					? this.i18n.t('view.createManagedExists', {
-							path,
-							topic: owner.topic,
-							version: ownerMember.version,
-						})
-					: this.i18n.t('view.createExists', { path }),
-			);
-			return false;
-		}
-
-		let createdFile: TFile | null = null;
-		let createdCapture: CapturedFile | null = null;
-		let registered = false;
+		let result: RegisteredVersionFileResult;
 		try {
 			if (view instanceof MarkdownView) {
 				await view.save();
 			}
-			createdFile = await this.app.vault.create(path, '');
-			createdCapture = captureFile(createdFile);
-			await this.registry.addMember(group.id, version, createdFile);
-			registered = true;
+			result = await createAndRegisterVersionFile(
+				this.app,
+				{
+					folderPath: group.folder,
+					format,
+					stem: filename,
+				},
+				(file) => this.registry.addMember(group.id, version, file),
+				(file) => this.app.fileManager.trashFile(file),
+				(file) => view.leaf.openFile(file, { active: true }),
+			);
 			this.onFilesChanged();
-			await view.leaf.openFile(createdFile, { active: true });
-			this.refresh();
-			return true;
 		} catch (error) {
-			if (createdFile && createdCapture && !registered) {
-				const rollbackFailures = await rollbackCreatedBlankFiles(
-					this.app.vault,
-					(file) => this.app.fileManager.trashFile(file),
-					[createdCapture],
-				);
-				if (rollbackFailures.length > 0) {
-					new Notice(this.i18n.t('view.rollbackFailed', {
-						path: createdFile.path,
-					}));
-				}
+			const creationError = error instanceof VersionFileRegistrationError
+				? error.originalCause
+				: error;
+			const rollbackFailurePath = error instanceof VersionFileRegistrationError
+				? error.rollbackFailures[0]
+				: creationError instanceof VersionFileCreationError
+					? creationError.rollbackFailures[0]
+					: undefined;
+			if (rollbackFailurePath) {
+				new Notice(this.i18n.t('view.rollbackFailed', {
+					path: rollbackFailurePath,
+				}));
 			}
 			this.registry.rebuild();
 			this.onFilesChanged();
-			new Notice(this.i18n.t('view.createFailed', {
-				message: getErrorMessage(error),
-			}));
+			this.showCreationFailure(creationError);
 			return false;
 		}
+
+		if (result.openFailed) {
+			new Notice(this.i18n.t('view.openAnotherFailed', {
+				message: getErrorMessage(result.openError),
+			}));
+		}
+		this.refresh();
+		return true;
+	}
+
+	private showCreationFailure(error: unknown): void {
+		if (
+			error instanceof VersionFileCreationError &&
+			error.code === VersionFileCreationErrorCode.PathConflict &&
+			error.path
+		) {
+			const existing = this.app.vault.getFileByPath(error.path);
+			const owner = existing ? this.index.getGroupForFile(existing) : null;
+			const ownerMember = owner?.versions.find(
+				(member) => member.path === error.path,
+			);
+			new Notice(
+				owner && ownerMember
+					? this.i18n.t('view.createManagedExists', {
+							path: error.path,
+							topic: owner.topic,
+							version: ownerMember.version,
+						})
+					: this.i18n.t('view.createExists', { path: error.path }),
+			);
+			return;
+		}
+		new Notice(this.i18n.t('view.createFailed', {
+			message: getVersionFileCreationErrorMessage(error, this.i18n),
+		}));
 	}
 
 }

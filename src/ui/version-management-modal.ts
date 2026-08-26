@@ -8,9 +8,12 @@ import {
 	TFile,
 	TFolder,
 } from 'obsidian';
-import { VersionI18n } from '../i18n';
-import { rollbackCreatedBlankFiles } from '../created-file-rollback';
-import { captureFile, CapturedFile } from '../captured-file';
+import { VersionI18n, type TranslationKey } from '../i18n';
+import {
+	CreatedFileRollbackCandidate,
+	rollbackCreatedFilesIfUnchanged,
+} from '../created-file-rollback';
+import { captureFile } from '../captured-file';
 import {
 	memberMatchesFile,
 	memberRecordFromFile,
@@ -23,7 +26,29 @@ import { VersionRegistry } from '../version-registry';
 import {
 	getVersionableFiles,
 } from '../version-file-types';
+import {
+	buildVersionFilePath,
+	createPreparedVersionFile,
+	detectVersionFileFormat,
+	isVersionFileFormat,
+	prepareVersionFile,
+	stripVersionFileSuffix,
+	VersionFileCreationError,
+	VersionFileCreationErrorCode,
+	type PreparedVersionFile,
+	type VersionFileFormat,
+} from '../version-file-creation';
+import { getVersionFileCreationErrorMessage } from '../version-file-creation-message';
 import { VersionHoverPreview } from './hover-preview';
+
+const VERSION_FILE_FORMAT_OPTIONS: ReadonlyArray<{
+	label: TranslationKey;
+	value: VersionFileFormat;
+}> = [
+	{ label: 'create.formatMarkdown', value: 'markdown' },
+	{ label: 'create.formatCanvas', value: 'canvas' },
+	{ label: 'create.formatExcalidraw', value: 'excalidraw' },
+];
 
 interface ExistingAssignment {
 	file: TFile;
@@ -36,6 +61,7 @@ interface MissingAssignment {
 }
 
 interface NewAssignment {
+	format: VersionFileFormat;
 	kind: 'new';
 	name: string;
 }
@@ -86,6 +112,7 @@ export class VersionManagementModal extends Modal {
 	private readonly initialMemberPath: string | null;
 	private readonly seriesId: string | null;
 	private readonly slots: DraftSlot[];
+	private readonly defaultNewFormat: VersionFileFormat;
 	private availableEl!: HTMLElement;
 	private cancelButton!: HTMLButtonElement;
 	private doneButton!: HTMLButtonElement;
@@ -126,6 +153,9 @@ export class VersionManagementModal extends Modal {
 		seriesIdOverride: string | null = null,
 	) {
 		super(app);
+		this.defaultNewFormat = currentFile
+			? detectVersionFileFormat(currentFile) ?? 'markdown'
+			: 'markdown';
 		// The parent keeps Modal's native Escape-to-close shortcut. This child
 		// scope lets an active keyboard drag consume Escape before it reaches it.
 		this.scope = new Scope(this.scope);
@@ -689,6 +719,14 @@ export class VersionManagementModal extends Modal {
 				cls: 'version-management-slot-placeholder',
 				text: this.i18n.t('manage.dropHere'),
 			});
+			const prepare = container.createEl('button', {
+				cls: 'version-management-prepare-blank',
+				text: this.i18n.t('manage.addBlank'),
+				attr: { type: 'button' },
+			});
+			prepare.addEventListener('click', () =>
+				this.prepareBlankVersion(slot.version),
+			);
 			return null;
 		}
 		if (assignment.kind === 'existing') {
@@ -708,13 +746,32 @@ export class VersionManagementModal extends Modal {
 			return nameEl;
 		}
 
-		const input = container.createEl('input', {
+		const fields = container.createDiv({
+			cls: 'version-management-new-fields',
+		});
+		const input = fields.createEl('input', {
 			cls: 'version-management-new-name',
 			attr: { type: 'text' },
 			value: assignment.name,
 		});
 		input.addEventListener('input', () => {
 			assignment.name = input.value;
+		});
+		const format = fields.createEl('select', {
+			cls: 'version-management-new-format',
+			attr: { 'aria-label': this.i18n.t('create.format') },
+		});
+		for (const option of VERSION_FILE_FORMAT_OPTIONS) {
+			format.createEl('option', {
+				text: this.i18n.t(option.label),
+				value: option.value,
+			});
+		}
+		format.value = assignment.format;
+		format.addEventListener('change', () => {
+			if (isVersionFileFormat(format.value)) {
+				assignment.format = format.value;
+			}
 		});
 		container.createDiv({
 			cls: 'version-management-file-path',
@@ -815,11 +872,15 @@ export class VersionManagementModal extends Modal {
 		}
 		const name = formatVersionFilename(
 			this.filenameTemplate,
-			v1.basename,
+			stripVersionFileSuffix(v1.name),
 			version,
 		);
-		slot.assignment = { kind: 'new', name };
-		const path = this.pathForNewMarkdown(name);
+		slot.assignment = {
+			format: this.defaultNewFormat,
+			kind: 'new',
+			name,
+		};
+		const path = this.pathForNewFile(name, this.defaultNewFormat);
 		if (path && this.app.vault.getAbstractFileByPath(path)) {
 			new Notice(this.i18n.t('manage.nameExists', { path }));
 		}
@@ -831,16 +892,20 @@ export class VersionManagementModal extends Modal {
 		return assignment?.kind === 'existing' ? assignment.file : null;
 	}
 
-	private pathForNewMarkdown(name: string): string | null {
+	private pathForNewFile(
+		name: string,
+		format: VersionFileFormat,
+	): string | null {
 		const v1 = this.getV1ExistingFile();
 		if (!v1) {
 			return null;
 		}
-		const filename = name.toLocaleLowerCase().endsWith('.md')
-			? name
-			: `${name}.md`;
 		const folder = v1.parent?.isRoot() ? '' : v1.parent?.path ?? '';
-		return normalizePath(folder ? `${folder}/${filename}` : filename);
+		try {
+			return buildVersionFilePath(folder, name, format);
+		} catch {
+			return null;
+		}
 	}
 
 	private scheduleAssignmentPreview(
@@ -1345,12 +1410,15 @@ export class VersionManagementModal extends Modal {
 
 		this.submitting = true;
 		this.renderAll();
-		const createdFiles: CapturedFile[] = [];
+		const createdFiles: CreatedFileRollbackCandidate[] = [];
 		const originalNewAssignments = new Map<DraftSlot, NewAssignment>();
 		let relationshipSaved = false;
 		try {
 			const folder = v1.parent?.isRoot() ? '' : v1.parent?.path ?? '';
-			const pendingPlans: Array<{ path: string; slot: DraftSlot }> = [];
+			const pendingPlans: Array<{
+				prepared: PreparedVersionFile;
+				slot: DraftSlot;
+			}> = [];
 			const plannedPaths = new Set<string>();
 			for (const slot of this.slots) {
 				const assignment = slot.assignment;
@@ -1361,18 +1429,18 @@ export class VersionManagementModal extends Modal {
 				if (!name || /[/\\\n\r]/u.test(name)) {
 					throw new Error(this.i18n.t('manage.invalidName'));
 				}
-				const filename = name.toLocaleLowerCase().endsWith('.md')
-					? name
-					: `${name}.md`;
-				const path = normalizePath(folder ? `${folder}/${filename}` : filename);
-				if (
-					plannedPaths.has(path) ||
-					this.app.vault.getAbstractFileByPath(path)
-				) {
-					throw new Error(this.i18n.t('manage.nameExists', { path }));
+				const prepared = await prepareVersionFile(this.app, {
+					folderPath: folder,
+					format: assignment.format,
+					stem: name,
+				});
+				if (plannedPaths.has(prepared.path)) {
+					throw new Error(this.i18n.t('manage.nameExists', {
+						path: prepared.path,
+					}));
 				}
-				plannedPaths.add(path);
-				pendingPlans.push({ path, slot });
+				plannedPaths.add(prepared.path);
+				pendingPlans.push({ prepared, slot });
 			}
 			const releasedMoves = this.planReleasedMoves(v1, plannedPaths, folder);
 
@@ -1392,8 +1460,8 @@ export class VersionManagementModal extends Modal {
 						}
 						return {
 							member: {
-								lastKnownName: basenameFromPath(plan.path),
-								path: plan.path,
+								lastKnownName: basenameFromPath(plan.prepared.path),
+								path: plan.prepared.path,
 							},
 							version: slot.version,
 						};
@@ -1411,8 +1479,14 @@ export class VersionManagementModal extends Modal {
 					throw new Error(this.i18n.t('manage.invalidName'));
 				}
 				originalNewAssignments.set(plan.slot, { ...assignment });
-				const file = await this.app.vault.create(plan.path, '');
-				createdFiles.push(captureFile(file));
+				const file = await createPreparedVersionFile(
+					this.app,
+					plan.prepared,
+				);
+				createdFiles.push({
+					capture: captureFile(file),
+					expectedContent: plan.prepared.content,
+				});
 				plan.slot.assignment = { file, kind: 'existing' };
 			}
 
@@ -1441,9 +1515,11 @@ export class VersionManagementModal extends Modal {
 			this.submitting = false;
 			this.close();
 		} catch (error) {
-			let rollbackFailures = 0;
+			let rollbackFailures = error instanceof VersionFileCreationError
+				? error.rollbackFailures.length
+				: 0;
 			if (!relationshipSaved) {
-				rollbackFailures = (await rollbackCreatedBlankFiles(
+				rollbackFailures += (await rollbackCreatedFilesIfUnchanged(
 					this.app.vault,
 					(file) => this.app.fileManager.trashFile(file),
 					createdFiles,
@@ -1453,7 +1529,7 @@ export class VersionManagementModal extends Modal {
 				}
 			}
 			new Notice(this.i18n.t('manage.saveFailed', {
-				message: error instanceof Error ? error.message : String(error),
+				message: this.getCreationSaveErrorMessage(error),
 			}));
 			if (rollbackFailures > 0) {
 				new Notice(this.i18n.t('manage.rollbackFailed', {
@@ -1463,6 +1539,17 @@ export class VersionManagementModal extends Modal {
 			this.submitting = false;
 			this.renderAll();
 		}
+	}
+
+	private getCreationSaveErrorMessage(error: unknown): string {
+		if (
+			error instanceof VersionFileCreationError &&
+			error.code === VersionFileCreationErrorCode.PathConflict &&
+			error.path
+		) {
+			return this.i18n.t('manage.nameExists', { path: error.path });
+		}
+		return getVersionFileCreationErrorMessage(error, this.i18n);
 	}
 
 	private async submitSingleRemainingVersion(v1: TFile): Promise<void> {
@@ -1737,16 +1824,15 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
 		return false;
 	}
 	const element = target as Element;
-	return (
-		isInputTarget(target) ||
-		element.instanceOf(HTMLButtonElement) ||
-		Boolean(element.closest('button, input, textarea'))
-	);
+		return (
+			isInputTarget(target) ||
+			element.instanceOf(HTMLButtonElement) ||
+			element.instanceOf(HTMLSelectElement) ||
+			Boolean(element.closest('button, input, select, textarea'))
+		);
 }
 
 function basenameFromPath(path: string): string {
 	const filename = path.split('/').pop() ?? path;
-	return filename.toLocaleLowerCase().endsWith('.md')
-		? filename.slice(0, -3)
-		: filename;
+	return stripVersionFileSuffix(filename);
 }

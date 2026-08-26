@@ -119,7 +119,7 @@ export const JA: Record<TranslationKey, string> = {
 	'manage.dropHere': 'ここにファイルをドロップ',
 	'manage.deleteSlot':
 		'バージョン {{version}} をシリーズから外す（ファイルは保持）',
-	'manage.restoreSlot': 'バージョン {{version}} に新しい空のノートを作成',
+	'manage.restoreSlot': 'バージョン {{version}} 用の空ファイルを準備',
 	'manage.unassignedVersion':
 		'バージョン {{version}} にファイルがありません。ファイルを割り当てるか、このバージョンを外してから［完了］を選んでください。',
 	'manage.releaseCollision':
@@ -127,7 +127,7 @@ export const JA: Record<TranslationKey, string> = {
 	'manage.releaseMoveFailed':
 		'バージョンの関連付けは保存しましたが、シリーズから外したファイルを移動できませんでした（{{count}} 件）。元の場所で引き続き読めます。',
 	'manage.rollbackFailed':
-		'保存に失敗した後、新しく作成した空のノート {{count}} 件を削除できませんでした。ノートは表示されたままで、引き続き読めます。',
+		'保存に失敗した後、新しく作成した空ファイル {{count}} 件を削除できませんでした。ファイルは表示されたままで、引き続き読めます。',
 	'manage.slotAria': 'バージョン {{version}} のスロット',
 	'manage.dragVersion': 'ドラッグしてバージョンの関連付けを変更',
 	'manage.missing': '見つかりません：{{name}}',
@@ -155,10 +155,10 @@ export const JA: Record<TranslationKey, string> = {
 		'現在の V1 をシリーズから外す前に、別のファイルを V1 にドラッグしてください。',
 	'manage.emptyPreview': 'このバージョンスロットにはファイルがありません。',
 	'manage.pendingPreview':
-		'この空の Markdown ファイルはまだ作成されていません。［完了］を選ぶと作成されます。',
+		'この空ファイルはまだ作成されていません。［完了］を選ぶと作成されます。',
 	'manage.missingPreview':
 		'登録済みのファイルが {{path}} に見つかりません。正しいファイルをこのスロットにドラッグして修復してください。',
-	'manage.invalidName': '新しい Markdown ファイル名が無効です。',
+	'manage.invalidName': '新しいファイル名が無効です。',
 	'manage.nameExists': '{{path}} はすでに存在します。',
 	'manage.saved': 'バージョンの関連付けを保存しました。',
 	'manage.saveFailed': 'バージョンの関連付けを保存できませんでした：{{message}}',
@@ -219,14 +219,22 @@ export const JA: Record<TranslationKey, string> = {
 	'reuse.create': 'V{{version}} を作成',
 	'create.title': 'V{{version}} を作成',
 	'create.description':
-		'新しい空の Markdown ファイルを 1 つ作成します。ほかのバージョンの内容はコピーしません。',
+		'新しい空のファイルを 1 つ作成します。ほかのバージョンの内容はコピーしません。',
 	'create.gapWarning':
 		'V{{version}} がゴミ箱、ファイルリカバリー、Sync の履歴に残っている可能性があります。両方を区別しやすくするには、別のファイル名を使用してください。',
-	'create.filename': 'Markdown ファイル名',
+	'create.format': 'ファイル形式',
+	'create.formatMarkdown': 'Markdown',
+	'create.formatCanvas': 'キャンバス',
+	'create.formatExcalidraw': 'Excalidraw',
+	'create.filename': 'ファイル名',
 	'create.filenameDescription':
 		'バージョンへの所属は明示的に保存され、このファイル名には依存しません。',
 	'create.confirm': 'V{{version}} を作成',
-	'create.invalidFilename': 'フォルダー区切り文字を含まない有効な Markdown ファイル名を入力してください。',
+	'create.invalidFilename': 'フォルダー区切り文字を含まない有効なファイル名を入力してください。',
+	'create.excalidrawUnavailable':
+		'Excalidraw がインストールまたは有効化されていないか、互換 API を利用できません。ファイルもバージョンスロットも作成していません。',
+	'create.excalidrawPreparationFailed':
+		'Excalidraw から有効な空の描画を取得できませんでした。ファイルもバージョンスロットも作成していません。',
 	'view.openAnotherFailed':
 		'別のバージョンを開けませんでした：{{message}}',
 	'view.openVersionAria': '「{{topic}}」のバージョン {{version}} を開く',
@@ -255,7 +263,7 @@ export const JA: Record<TranslationKey, string> = {
 		'{{path}} を作成できません：「{{topic}}」の V{{version}} としてすでに登録されています。',
 	'view.createFailed': 'バージョンを作成できませんでした：{{message}}',
 	'view.rollbackFailed':
-		'登録に失敗した後、新しく作成した空のノート（{{path}}）を削除できませんでした。ノートは表示されたままで、引き続き読めます。',
+		'登録に失敗した後、新しく作成した空ファイル（{{path}}）を削除できませんでした。ファイルは表示されたままで、引き続き読めます。',
 	'view.registryUpdateFailed':
 		'ファイルの移動または名前変更後にバージョンの関連付けを更新できませんでした。影響を受けたファイルはすべて表示されたままです。{{message}}',
 	'view.identityMigrationFailed':

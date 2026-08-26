@@ -1,20 +1,31 @@
 import { App, Modal, Notice, Setting, TextComponent } from 'obsidian';
 import { VersionI18n } from '../i18n';
+import {
+	isVersionFileFormat,
+	stripVersionFileSuffix,
+	type VersionFileFormat,
+} from '../version-file-creation';
 
 export class CreateVersionModal extends Modal {
 	private filename = '';
+	private format: VersionFileFormat;
 	private submitting = false;
 
 	constructor(
 		app: App,
 		private readonly version: number,
 		defaultFilename: string,
+		defaultFormat: VersionFileFormat,
 		private readonly fillsGap: boolean,
-		private readonly onCreate: (filename: string) => Promise<boolean>,
+		private readonly onCreate: (
+			filename: string,
+			format: VersionFileFormat,
+		) => Promise<boolean>,
 		private readonly i18n: VersionI18n,
 	) {
 		super(app);
 		this.filename = defaultFilename;
+		this.format = defaultFormat;
 	}
 
 	onOpen(): void {
@@ -31,6 +42,21 @@ export class CreateVersionModal extends Modal {
 				}),
 			});
 		}
+
+		new Setting(this.contentEl)
+			.setName(this.i18n.t('create.format'))
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOption('markdown', this.i18n.t('create.formatMarkdown'))
+					.addOption('canvas', this.i18n.t('create.formatCanvas'))
+					.addOption('excalidraw', this.i18n.t('create.formatExcalidraw'))
+					.setValue(this.format)
+					.onChange((value) => {
+						if (isVersionFileFormat(value)) {
+							this.format = value;
+						}
+					}),
+			);
 
 		let filenameInput: TextComponent | null = null;
 		new Setting(this.contentEl)
@@ -79,7 +105,7 @@ export class CreateVersionModal extends Modal {
 
 		this.submitting = true;
 		try {
-			if (await this.onCreate(filename)) {
+			if (await this.onCreate(filename, this.format)) {
 				this.close();
 			}
 		} finally {
@@ -93,7 +119,6 @@ function normalizeFilename(value: string): string | null {
 	if (!filename || /[/\\\n\r]/u.test(filename)) {
 		return null;
 	}
-	return filename.toLocaleLowerCase().endsWith('.md')
-		? filename.slice(0, -3)
-		: filename;
+	const stem = stripVersionFileSuffix(filename).trim();
+	return stem.length > 0 ? stem : null;
 }

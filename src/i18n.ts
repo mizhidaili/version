@@ -128,7 +128,7 @@ const EN = {
 	'manage.dropHere': 'Drop a file here',
 	'manage.deleteSlot':
 		'Remove version {{version}} from the series (keep its file)',
-	'manage.restoreSlot': 'Create a blank note for Version {{version}}',
+	'manage.restoreSlot': 'Prepare a blank file for Version {{version}}',
 	'manage.unassignedVersion':
 		'Version {{version}} does not have a file. Assign a file or remove this version before choosing Done.',
 	'manage.releaseCollision':
@@ -136,7 +136,7 @@ const EN = {
 	'manage.releaseMoveFailed':
 		'The Version relationship was saved, but {{count}} files removed from the series could not be moved. They remain readable in their previous locations.',
 	'manage.rollbackFailed':
-		'After the save failed, newly created blank notes could not be removed ({{count}} total). They remain visible and readable.',
+		'After the save failed, newly created blank files could not be removed ({{count}} total). They remain visible and readable.',
 	'manage.slotAria': 'Version {{version}} slot',
 	'manage.dragVersion': 'Drag to change this version relationship',
 	'manage.missing': 'Missing: {{name}}',
@@ -164,10 +164,10 @@ const EN = {
 		'Drag another file onto V1 before moving the current V1 out of the series.',
 	'manage.emptyPreview': 'This version slot does not have a file.',
 	'manage.pendingPreview':
-		'This blank Markdown file has not been created yet. It will be created only after you choose Done.',
+		'This blank file has not been created yet. It will be created only after you choose Done.',
 	'manage.missingPreview':
 		'The registered file could not be found at {{path}}. Drag the correct file into this slot to repair it.',
-	'manage.invalidName': 'The new Markdown filename is not valid.',
+	'manage.invalidName': 'The new filename is not valid.',
 	'manage.nameExists': '{{path}} already exists.',
 	'manage.saved': 'Version relationship saved.',
 	'manage.saveFailed': 'Could not save Version relationship: {{message}}',
@@ -228,14 +228,22 @@ const EN = {
 	'reuse.create': 'Create V{{version}}',
 	'create.title': 'Create V{{version}}',
 	'create.description':
-		'This creates one new, empty Markdown file. No content is copied from another version.',
+		'This creates one new, empty file. No content is copied from another version.',
 	'create.gapWarning':
 		'V{{version}} may still exist in Trash, File recovery, or Sync history. Use a different filename if you want both copies to remain easy to distinguish.',
-	'create.filename': 'Markdown filename',
+	'create.format': 'File type',
+	'create.formatMarkdown': 'Markdown',
+	'create.formatCanvas': 'Canvas',
+	'create.formatExcalidraw': 'Excalidraw',
+	'create.filename': 'Filename',
 	'create.filenameDescription':
 		'Version membership is stored explicitly and does not depend on this filename.',
 	'create.confirm': 'Create V{{version}}',
-	'create.invalidFilename': 'Enter a valid Markdown filename without folder separators.',
+	'create.invalidFilename': 'Enter a valid filename without folder separators.',
+	'create.excalidrawUnavailable':
+		'Excalidraw is not installed, enabled, or exposing a compatible API. No file or version slot was created.',
+	'create.excalidrawPreparationFailed':
+		'Excalidraw could not provide a valid blank drawing. No file or version slot was created.',
 	'view.openAnotherFailed':
 		'Could not open another version: {{message}}',
 	'view.openVersionAria': 'Open {{topic}} version {{version}}',
@@ -264,7 +272,7 @@ const EN = {
 		'Cannot create {{path}}: it already belongs to {{topic}} as V{{version}}.',
 	'view.createFailed': 'Could not create version: {{message}}',
 	'view.rollbackFailed':
-		'Could not remove the newly created blank note at {{path}} after registration failed. It remains visible and readable.',
+		'Could not remove the newly created blank file at {{path}} after registration failed. It remains visible and readable.',
 	'view.registryUpdateFailed':
 		'The Version relationship could not be updated after the file moved or was renamed. All affected files remain visible. {{message}}',
 	'view.identityMigrationFailed':
@@ -392,7 +400,7 @@ const ZH: Record<TranslationKey, string> = {
 	'manage.boardHelp': '拖入槽位；拖到另一版本上可交换。',
 	'manage.dropHere': '将一个文件拖到这里',
 	'manage.deleteSlot': '从系列中移除版本 {{version}}（保留文件）',
-	'manage.restoreSlot': '用空白笔记重新插入版本 {{version}}',
+	'manage.restoreSlot': '为版本 {{version}} 准备一个空白文件',
 	'manage.unassignedVersion':
 		'版本 {{version}} 还没有对应文件。请先放入一个文件，或移除这个版本，再点击“完成”。',
 	'manage.releaseCollision':
@@ -400,7 +408,7 @@ const ZH: Record<TranslationKey, string> = {
 	'manage.releaseMoveFailed':
 		'版本关系已经保存，但有 {{count}} 个移出的文件未能移动；它们仍可在原位置正常读取。',
 	'manage.rollbackFailed':
-		'保存失败后，有 {{count}} 篇新建的空白笔记未能移除；它们仍然可见且可以正常读取。',
+		'保存失败后，有 {{count}} 个新建的空白文件未能移除；它们仍然可见且可以正常读取。',
 	'manage.slotAria': '版本 {{version}} 槽位',
 	'manage.dragVersion': '拖动以调整版本关系',
 	'manage.missing': '缺失：{{name}}',
@@ -424,10 +432,10 @@ const ZH: Record<TranslationKey, string> = {
 	'manage.twoVersionsRequired': '至少放入两个文件后才能创建版本系列。',
 	'manage.v1MoveRequired': '请先把另一个文件拖到 V1，再将原来的 V1 移出系列。',
 	'manage.emptyPreview': '这个版本槽位目前没有对应文件。',
-	'manage.pendingPreview': '这篇空白 Markdown 尚未创建；只有点击“完成”后才会真正写入仓库。',
+	'manage.pendingPreview': '这个空白文件尚未创建；只有点击“完成”后才会真正写入仓库。',
 	'manage.missingPreview':
 		'无法在 {{path}} 找到登记的文件。请把正确的文件拖到这个槽位进行修复。',
-	'manage.invalidName': '新 Markdown 的文件名无效。',
+	'manage.invalidName': '新文件的名称无效。',
 	'manage.nameExists': '{{path}} 已经存在。',
 	'manage.saved': '版本关系已保存。',
 	'manage.saveFailed': '无法保存版本关系：{{message}}',
@@ -484,13 +492,21 @@ const ZH: Record<TranslationKey, string> = {
 		'创建 {{topic}} (V{{version}}).md 会重新占用同一路径。系统的“放回原处”可能因此被阻止，而恢复快照可能替换新文件内容。',
 	'reuse.create': '创建 V{{version}}',
 	'create.title': '创建 V{{version}}',
-	'create.description': '这只会创建一篇新的空白 Markdown，不会复制其他版本的正文。',
+	'create.description': '这只会创建一个新的空白文件，不会复制其他版本的内容。',
 	'create.gapWarning':
 		'废纸篓、文件恢复或同步历史中可能仍有 V{{version}}。如果希望两份内容容易区分，可以在这里使用不同文件名。',
-	'create.filename': 'Markdown 文件名',
+	'create.format': '文件类型',
+	'create.formatMarkdown': 'Markdown',
+	'create.formatCanvas': '白板',
+	'create.formatExcalidraw': 'Excalidraw',
+	'create.filename': '文件名',
 	'create.filenameDescription': '版本归属由插件明确登记，不依赖这里的文件名。',
 	'create.confirm': '创建 V{{version}}',
-	'create.invalidFilename': '请输入不含文件夹分隔符的有效 Markdown 文件名。',
+	'create.invalidFilename': '请输入不含文件夹分隔符的有效文件名。',
+	'create.excalidrawUnavailable':
+		'Excalidraw 未安装、未启用，或没有提供兼容的 API；没有创建文件，也没有登记版本槽位。',
+	'create.excalidrawPreparationFailed':
+		'Excalidraw 未能提供有效的空白绘图；没有创建文件，也没有登记版本槽位。',
 	'view.openAnotherFailed': '无法打开其他版本：{{message}}',
 	'view.openVersionAria': '打开“{{topic}}”的版本 {{version}}',
 	'view.versionActions': '右键打开版本操作',
@@ -516,7 +532,7 @@ const ZH: Record<TranslationKey, string> = {
 	'view.createManagedExists': '无法创建 {{path}}：它已经是“{{topic}}”的 V{{version}}。',
 	'view.createFailed': '无法创建版本：{{message}}',
 	'view.rollbackFailed':
-		'版本登记失败后，无法移除新建的空白笔记 {{path}}；它仍然可见且可以正常读取。',
+		'版本登记失败后，无法移除新建的空白文件 {{path}}；它仍然可见且可以正常读取。',
 	'view.registryUpdateFailed':
 		'文件移动或重命名后，Version 关系无法保存；受影响的文件将保持可见。{{message}}',
 	'view.identityMigrationFailed':

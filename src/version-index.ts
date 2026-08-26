@@ -98,7 +98,9 @@ export class VersionIndex {
 	}
 
 	private resolveSeries(record: VersionSeriesRecord): MutableVersionGroup {
-		let status: VersionSeriesStatus = 'healthy';
+		let status: VersionSeriesStatus = record.slots.length < 2
+			? 'invalid'
+			: 'healthy';
 		const versions: VersionFile[] = [];
 		const seenVersions = new Set<number>();
 		const seenPaths = new Set<string>();

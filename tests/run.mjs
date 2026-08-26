@@ -44,7 +44,7 @@ function verifyI18nCatalogs(root) {
 		da: readCatalog(path.join(root, 'src/locales/da.ts'), 'DA'),
 		ja: readCatalog(path.join(root, 'src/locales/ja.ts'), 'JA'),
 	};
-	const expectedKeyCount = 217;
+	const expectedKeyCount = 223;
 	const referenceKeys = Object.keys(catalogs.en).sort();
 	assert.equal(
 		referenceKeys.length,

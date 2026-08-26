@@ -3,9 +3,20 @@ import { VersionI18n } from '../i18n';
 import { VersionGroup } from '../version-index';
 import { VersionHoverPreview } from './hover-preview';
 
-interface ThemeBacklink {
+export interface RegisteredBacklinkTarget {
+	path: string;
+	version: number;
+}
+
+export interface ThemeBacklinkTarget {
+	count: number;
+	version: number;
+}
+
+export interface ThemeBacklink {
 	count: number;
 	source: TFile;
+	targets: ThemeBacklinkTarget[];
 }
 
 export class ThemeBacklinksModal extends Modal {
@@ -53,7 +64,14 @@ export class ThemeBacklinksModal extends Modal {
 			button.type = 'button';
 			const nameEl = button.createSpan({
 				cls: 'version-backlinks-name',
+			});
+			nameEl.createSpan({
+				cls: 'version-backlinks-source',
 				text: backlink.source.basename,
+			});
+			nameEl.createSpan({
+				cls: 'version-backlinks-targets',
+				text: formatBacklinkTargets(backlink.targets),
 			});
 			button.createSpan({
 				cls: 'version-backlinks-count',
@@ -99,18 +117,17 @@ export function collectThemeBacklinks(
 	app: App,
 	group: VersionGroup,
 ): ThemeBacklink[] {
-	const targetPaths = new Set(
-		group.versions.map((versionFile) => versionFile.file.path),
-	);
+	const registeredTargets = group.versions.map((versionFile) => ({
+		path: versionFile.path,
+		version: versionFile.version,
+	}));
 	const backlinks: ThemeBacklink[] = [];
 
 	for (const [sourcePath, destinations] of Object.entries(
 		app.metadataCache.resolvedLinks,
 	)) {
-		let count = 0;
-		for (const targetPath of targetPaths) {
-			count += destinations[targetPath] ?? 0;
-		}
+		const targets = collectBacklinkTargets(destinations, registeredTargets);
+		const count = targets.reduce((total, target) => total + target.count, 0);
 
 		if (count === 0) {
 			continue;
@@ -118,11 +135,36 @@ export function collectThemeBacklinks(
 
 		const source = app.vault.getAbstractFileByPath(sourcePath);
 		if (source instanceof TFile) {
-			backlinks.push({ count, source });
+			backlinks.push({ count, source, targets });
 		}
 	}
 
 	return backlinks.sort((left, right) =>
 		left.source.path.localeCompare(right.source.path),
 	);
+}
+
+export function collectBacklinkTargets(
+	destinations: Readonly<Record<string, number>>,
+	registeredTargets: readonly RegisteredBacklinkTarget[],
+): ThemeBacklinkTarget[] {
+	return registeredTargets
+		.map((target) => ({
+			count: destinations[target.path] ?? 0,
+			version: target.version,
+		}))
+		.filter((target) => target.count > 0)
+		.sort((left, right) => left.version - right.version);
+}
+
+export function formatBacklinkTargets(
+	targets: readonly ThemeBacklinkTarget[],
+): string {
+	return targets
+		.map((target) =>
+			target.count > 1
+				? `V${target.version} × ${target.count}`
+				: `V${target.version}`,
+		)
+		.join(' · ');
 }

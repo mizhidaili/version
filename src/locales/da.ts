@@ -120,7 +120,7 @@ export const DA: Record<TranslationKey, string> = {
 	'manage.dropHere': 'Slip en fil her',
 	'manage.deleteSlot':
 		'Fjern version {{version}} fra serien (behold filen)',
-	'manage.restoreSlot': 'Opret en tom note til version {{version}}',
+	'manage.restoreSlot': 'Forbered en tom fil til version {{version}}',
 	'manage.unassignedVersion':
 		'Version {{version}} har ingen fil. Tildel en fil, eller fjern versionen, før du vælger Færdig.',
 	'manage.releaseCollision':
@@ -128,7 +128,7 @@ export const DA: Record<TranslationKey, string> = {
 	'manage.releaseMoveFailed':
 		'Versionsrelationen blev gemt, men filer, der blev fjernet fra serien, kunne ikke flyttes ({{count}} i alt). De kan stadig læses på deres tidligere placeringer.',
 	'manage.rollbackFailed':
-		'Nyoprettede tomme noter kunne ikke fjernes efter den mislykkede lagring ({{count}} i alt). De er stadig synlige og læsbare.',
+		'Nyoprettede tomme filer kunne ikke fjernes efter den mislykkede lagring ({{count}} i alt). De er stadig synlige og læsbare.',
 	'manage.slotAria': 'Plads til version {{version}}',
 	'manage.dragVersion': 'Træk for at ændre versionsrelationen',
 	'manage.missing': 'Mangler: {{name}}',
@@ -156,10 +156,10 @@ export const DA: Record<TranslationKey, string> = {
 		'Træk en anden fil hen på V1, før du flytter den nuværende V1 ud af serien.',
 	'manage.emptyPreview': 'Denne versionsplads har ingen fil.',
 	'manage.pendingPreview':
-		'Den tomme Markdown-fil er ikke oprettet endnu. Den oprettes først, når du vælger Færdig.',
+		'Den tomme fil er ikke oprettet endnu. Den oprettes først, når du vælger Færdig.',
 	'manage.missingPreview':
 		'Den registrerede fil blev ikke fundet på {{path}}. Træk den rigtige fil til pladsen for at reparere relationen.',
-	'manage.invalidName': 'Det nye Markdown-filnavn er ugyldigt.',
+	'manage.invalidName': 'Det nye filnavn er ugyldigt.',
 	'manage.nameExists': '{{path}} findes allerede.',
 	'manage.saved': 'Versionsrelationen blev gemt.',
 	'manage.saveFailed': 'Versionsrelationen kunne ikke gemmes: {{message}}',
@@ -220,14 +220,22 @@ export const DA: Record<TranslationKey, string> = {
 	'reuse.create': 'Opret V{{version}}',
 	'create.title': 'Opret V{{version}}',
 	'create.description':
-		'Dette opretter én ny, tom Markdown-fil. Intet indhold kopieres fra en anden version.',
+		'Dette opretter én ny, tom fil. Intet indhold kopieres fra en anden version.',
 	'create.gapWarning':
 		'V{{version}} findes muligvis stadig i Papirkurv, Filgendannelse eller Sync-historik. Brug et andet filnavn, hvis begge kopier fortsat skal være nemme at kende fra hinanden.',
-	'create.filename': 'Markdown-filnavn',
+	'create.format': 'Filtype',
+	'create.formatMarkdown': 'Markdown',
+	'create.formatCanvas': 'Canvas',
+	'create.formatExcalidraw': 'Excalidraw',
+	'create.filename': 'Filnavn',
 	'create.filenameDescription':
 		'Versionstilknytningen gemmes eksplicit og afhænger ikke af filnavnet.',
 	'create.confirm': 'Opret V{{version}}',
-	'create.invalidFilename': 'Angiv et gyldigt Markdown-filnavn uden mappeseparatorer.',
+	'create.invalidFilename': 'Angiv et gyldigt filnavn uden mappeseparatorer.',
+	'create.excalidrawUnavailable':
+		'Excalidraw er ikke installeret, aktiveret eller har ikke en kompatibel API. Ingen fil eller versionsplads blev oprettet.',
+	'create.excalidrawPreparationFailed':
+		'Excalidraw kunne ikke levere en gyldig tom tegning. Ingen fil eller versionsplads blev oprettet.',
 	'view.openAnotherFailed':
 		'En anden version kunne ikke åbnes: {{message}}',
 	'view.openVersionAria': 'Åbn {{topic}}, version {{version}}',
@@ -256,7 +264,7 @@ export const DA: Record<TranslationKey, string> = {
 		'{{path}} kan ikke oprettes: Den tilhører allerede {{topic}} som V{{version}}.',
 	'view.createFailed': 'Versionen kunne ikke oprettes: {{message}}',
 	'view.rollbackFailed':
-		'Den nyoprettede tomme note på {{path}} kunne ikke fjernes, efter registreringen mislykkedes. Den er stadig synlig og læsbar.',
+		'Den nyoprettede tomme fil på {{path}} kunne ikke fjernes, efter registreringen mislykkedes. Den er stadig synlig og læsbar.',
 	'view.registryUpdateFailed':
 		'Versionsrelationen kunne ikke opdateres, efter filen blev flyttet eller omdøbt. Alle berørte filer er stadig synlige. {{message}}',
 	'view.identityMigrationFailed':
