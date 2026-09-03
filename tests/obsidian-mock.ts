@@ -48,6 +48,14 @@ export class TFolder {
 
 export class App {}
 
+export class FileView {
+	file: TFile | null = null;
+}
+
+export class MarkdownView extends FileView {
+	async save(): Promise<void> {}
+}
+
 export class Scope {
 	constructor(public readonly parent?: Scope) {}
 
@@ -71,8 +79,10 @@ export class Menu extends Component {
 }
 
 export class Modal {
+	static lastOpened: Modal | null = null;
 	app: App;
 	closeCalls = 0;
+	openCalls = 0;
 	scope: Scope;
 
 	constructor(app: App) {
@@ -83,7 +93,16 @@ export class Modal {
 	close(): void {
 		this.closeCalls += 1;
 	}
+
+	open(): void {
+		this.openCalls += 1;
+		Modal.lastOpened = this;
+	}
 }
+
+export class Setting {}
+
+export class TextComponent {}
 
 export const MarkdownRenderer = {
 	async render(): Promise<void> {},
@@ -94,6 +113,8 @@ export function getLinkpath(linktext: string): string {
 }
 
 export function setIcon(): void {}
+
+export function setTooltip(): void {}
 
 export class Vault {
 	private readonly contents = new Map<string, string>();

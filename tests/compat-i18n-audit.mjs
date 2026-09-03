@@ -95,6 +95,21 @@ assert.match(
 );
 assert.match(
 	viewDecorator,
+	/if \(repair\) \{[\s\S]*?this\.onManage\(view\.file\);[\s\S]*?return;[\s\S]*?this\.openInitialVersionModal\(view\);/u,
+	'Only an incomplete relationship may route the standalone toolbar action into Version management',
+);
+assert.match(
+	viewDecorator,
+	/private openInitialVersionModal\(view: FileView\)[\s\S]*?new CreateVersionModal\([\s\S]*?\n\s*2,[\s\S]*?detectVersionFileFormat\(v1\) \?\? 'markdown'[\s\S]*?\n\s*false,[\s\S]*?this\.createInitialVersion/u,
+	'An unmanaged note must open the format-aware V2 quick-create modal directly',
+);
+assert.match(
+	viewDecorator,
+	/private async createInitialVersion[\s\S]*?createAndRegisterVersionFile\([\s\S]*?this\.registry\.createSeries\(v1, file\)[\s\S]*?view\.leaf\.openFile/u,
+	'Initial quick-create must use the shared file transaction and commit a real V1/V2 registry relationship before opening V2',
+);
+assert.match(
+	viewDecorator,
 	/canUpdateInPlace[\s\S]*?this\.updateVersionButton[\s\S]*?return;/u,
 	'Repeated compatibility refreshes must preserve stable version-tab nodes',
 );
@@ -207,6 +222,11 @@ assert.match(
 	versionCss,
 	/@media \(max-width: 900px\)[\s\S]*?\.version-management-slot-card\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);[\s\S]*?\.version-management-slot-controls\s*\{[^}]*justify-self:\s*end;/u,
 	'iPad-width management controls must use their own row rather than squeezing filenames',
+);
+assert.match(
+	versionCss,
+	/\.version-management-new-format\.is-pointer-focused:focus\s*\{[^}]*border-color:\s*var\(--background-modifier-border\);[^}]*box-shadow:\s*none;[^}]*outline:\s*none;/u,
+	'Pointer-selected formats must drop the stale ring without overriding keyboard focus-visible styles',
 );
 assert.match(
 	versionCss,

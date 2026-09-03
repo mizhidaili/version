@@ -404,9 +404,14 @@ export class VersionViewDecorator {
 			repair ? 'wrench' : 'plus',
 			this.i18n.t(repair ? 'view.repairVersions' : 'view.createSecond'),
 			() => {
-				if (view.file) {
-					this.onManage(view.file);
+				if (!view.file) {
+					return;
 				}
+				if (repair) {
+					this.onManage(view.file);
+					return;
+				}
+				this.openInitialVersionModal(view);
 			},
 		);
 		actionEl.addClass('version-start-action');
@@ -422,6 +427,122 @@ export class VersionViewDecorator {
 
 		actionEl.remove();
 		this.standaloneActions.delete(view);
+	}
+
+	private openInitialVersionModal(view: FileView): void {
+		const v1 = view.file;
+		if (!v1 || !isVersionableFile(v1)) {
+			return;
+		}
+		// The standalone action can outlive one registry refresh. Never turn a
+		// stale click into a second relationship or silently route an ordinary
+		// note through Version management.
+		if (this.index.getGroupForFile(v1)) {
+			this.refresh();
+			return;
+		}
+
+		let defaultFilename: string;
+		try {
+			defaultFilename = formatVersionFilename(
+				this.getFilenameTemplate(),
+				stripVersionFileSuffix(v1.name),
+				2,
+			);
+		} catch (error) {
+			new Notice(this.i18n.t('view.setupFailed', {
+				message: getErrorMessage(error),
+			}));
+			return;
+		}
+
+		new CreateVersionModal(
+			this.app,
+			2,
+			defaultFilename,
+			detectVersionFileFormat(v1) ?? 'markdown',
+			false,
+			(filename, format) => this.createInitialVersion(
+				view,
+				v1,
+				filename,
+				format,
+			),
+			this.i18n,
+		).open();
+	}
+
+	private async createInitialVersion(
+		view: FileView,
+		v1: TFile,
+		filename: string,
+		format: VersionFileFormat,
+	): Promise<boolean> {
+		if (this.index.getGroupForFile(v1)) {
+			this.refresh();
+			return false;
+		}
+
+		let result: RegisteredVersionFileResult;
+		try {
+			if (view instanceof MarkdownView && view.file === v1) {
+				await view.save();
+			}
+			result = await createAndRegisterVersionFile(
+				this.app,
+				{
+					folderPath: parentPath(v1.path),
+					format,
+					stem: filename,
+				},
+				async (file) => {
+					await this.registry.createSeries(v1, file);
+				},
+				(file) => this.app.fileManager.trashFile(file),
+				(file) => view.leaf.openFile(file, { active: true }),
+			);
+			this.onFilesChanged();
+		} catch (error) {
+			const creationError = error instanceof VersionFileRegistrationError
+				? error.originalCause
+				: error;
+			const rollbackFailurePath = error instanceof VersionFileRegistrationError
+				? error.rollbackFailures[0]
+				: creationError instanceof VersionFileCreationError
+					? creationError.rollbackFailures[0]
+					: undefined;
+			if (rollbackFailurePath) {
+				new Notice(this.i18n.t('view.rollbackAttention', {
+					path: rollbackFailurePath,
+				}));
+			}
+			this.registry.rebuild();
+			this.onFilesChanged();
+			this.showInitialCreationFailure(creationError);
+			return false;
+		}
+
+		if (result.openFailed) {
+			new Notice(this.i18n.t('view.openAnotherFailed', {
+				message: getErrorMessage(result.openError),
+			}));
+		}
+		this.refresh();
+		return true;
+	}
+
+	private showInitialCreationFailure(error: unknown): void {
+		if (
+			error instanceof VersionFileCreationError &&
+			error.code === VersionFileCreationErrorCode.PathConflict &&
+			error.path
+		) {
+			new Notice(this.i18n.t('view.setupExists', { path: error.path }));
+			return;
+		}
+		new Notice(this.i18n.t('view.setupFailed', {
+			message: getVersionFileCreationErrorMessage(error, this.i18n),
+		}));
 	}
 
 	private openVersionMenu(
@@ -704,4 +825,9 @@ function isEditableVersionViewType(viewType: string): boolean {
 
 function getErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function parentPath(path: string): string {
+	const separator = path.lastIndexOf('/');
+	return separator < 0 ? '' : path.slice(0, separator);
 }

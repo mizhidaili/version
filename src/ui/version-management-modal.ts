@@ -50,6 +50,19 @@ const VERSION_FILE_FORMAT_OPTIONS: ReadonlyArray<{
 	{ label: 'create.formatExcalidraw', value: 'excalidraw' },
 ];
 
+const POINTER_FOCUS_CLASS = 'is-pointer-focused';
+
+export function trackPointerFocus(control: HTMLElement): void {
+	const clearPointerFocus = (): void => {
+		control.classList.remove(POINTER_FOCUS_CLASS);
+	};
+	control.addEventListener('pointerdown', () => {
+		control.classList.add(POINTER_FOCUS_CLASS);
+	});
+	control.addEventListener('keydown', clearPointerFocus);
+	control.addEventListener('blur', clearPointerFocus);
+}
+
 interface ExistingAssignment {
 	file: TFile;
 	kind: 'existing';
@@ -768,6 +781,7 @@ export class VersionManagementModal extends Modal {
 			});
 		}
 		format.value = assignment.format;
+		trackPointerFocus(format);
 		format.addEventListener('change', () => {
 			if (isVersionFileFormat(format.value)) {
 				assignment.format = format.value;

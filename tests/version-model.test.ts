@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { TFile, Vault } from 'obsidian';
+import { FileView, Modal, TFile, Vault } from 'obsidian';
 import { findRecoveryPath } from '../src/import-recovered-markdown';
 import {
 	isValidFilenameTemplate,
@@ -46,7 +46,11 @@ import {
 	groupCopyPathActions,
 	shouldIncludeNativeFileAction,
 } from '../src/native-file-action-bridge';
-import { VersionManagementModal } from '../src/ui/version-management-modal';
+import {
+	trackPointerFocus,
+	VersionManagementModal,
+} from '../src/ui/version-management-modal';
+import { VersionViewDecorator } from '../src/ui/version-view-decorator';
 import {
 	canOpenFileRecoveryHistory,
 	openFileRecoveryHistory,
@@ -1641,6 +1645,224 @@ equal(
 	'Cancel leaves no staged Canvas file in the vault',
 );
 
+const standaloneVault = new Vault(['Fresh/Board.canvas']) as unknown as Vault;
+const standaloneV1 = standaloneVault.getFileByPath('Fresh/Board.canvas');
+check(standaloneV1, 'standalone creation fixture has an unmanaged Canvas note');
+let standaloneFilesChanged = 0;
+let standaloneManageCalls = 0;
+let standaloneOpenedPath: string | null = null;
+let standaloneClick: (() => void) | null = null;
+const standaloneRegistry = new VersionRegistry(
+	standaloneVault,
+	[],
+	async () => undefined,
+);
+const standaloneDecorator = new VersionViewDecorator(
+	makeCreationApp(standaloneVault),
+	standaloneRegistry.index,
+	standaloneRegistry,
+	() => '{{name}} (V{{version}})',
+	() => {
+		standaloneFilesChanged += 1;
+	},
+	() => {
+		standaloneManageCalls += 1;
+	},
+	() => undefined,
+	() => undefined,
+	() => undefined,
+	new VersionI18n('en'),
+);
+const standaloneHarness = standaloneDecorator as unknown as {
+	createInitialVersion(
+		view: FileView,
+		v1: TFile,
+		filename: string,
+		format: 'markdown' | 'canvas' | 'excalidraw',
+	): Promise<boolean>;
+	ensureStandaloneAction(view: FileView, repair: boolean): void;
+	refresh(): void;
+};
+standaloneHarness.refresh = () => undefined;
+const standaloneAction = {
+	addClass: () => undefined,
+	dataset: {} as Record<string, string>,
+	isConnected: true,
+	remove: () => undefined,
+};
+const standaloneView = {
+	addAction: (
+		_icon: string,
+		_label: string,
+		callback: () => void,
+	) => {
+		standaloneClick = callback;
+		return standaloneAction;
+	},
+	containerEl: { contains: () => true },
+	file: standaloneV1,
+	leaf: {
+		openFile: async (file: TFile) => {
+			standaloneOpenedPath = file.path;
+		},
+	},
+} as unknown as FileView;
+const modalTestHarness = Modal as unknown as {
+	lastOpened: Modal | null;
+};
+modalTestHarness.lastOpened = null;
+standaloneHarness.ensureStandaloneAction(standaloneView, false);
+check(standaloneClick, 'an unmanaged note receives a working standalone plus action');
+(standaloneClick as unknown as () => void)();
+equal(
+	standaloneManageCalls,
+	0,
+	'the unmanaged-note plus does not enter Version management',
+);
+const standaloneCreateModal = modalTestHarness.lastOpened as unknown as {
+	filename: string;
+	format: 'markdown' | 'canvas' | 'excalidraw';
+	onCreate(
+		filename: string,
+		format: 'markdown' | 'canvas' | 'excalidraw',
+	): Promise<boolean>;
+	version: number;
+};
+check(standaloneCreateModal, 'the unmanaged-note plus opens the quick-create modal');
+equal(standaloneCreateModal.version, 2, 'standalone quick-create starts at V2');
+equal(
+	standaloneCreateModal.filename,
+	'Board (V2)',
+	'standalone quick-create derives the V2 filename from the real V1 file',
+);
+equal(
+	standaloneCreateModal.format,
+	'canvas',
+	'standalone quick-create defaults to the open note format',
+);
+equal(
+	standaloneVault.getFileByPath('Fresh/Board (V2).canvas'),
+	null,
+	'opening or cancelling quick-create does not create a staged file',
+);
+equal(
+	standaloneRegistry.getRecords().length,
+	0,
+	'opening or cancelling quick-create does not register an empty relationship',
+);
+equal(
+	await standaloneCreateModal.onCreate('Board (V2)', 'canvas'),
+	true,
+	'standalone quick-create completes through the shared creation transaction',
+);
+const standaloneV2 = standaloneVault.getFileByPath('Fresh/Board (V2).canvas');
+check(standaloneV2, 'standalone quick-create writes the selected Canvas V2');
+assert.deepEqual(
+	JSON.parse(await standaloneVault.read(standaloneV2)),
+	{ edges: [], nodes: [] },
+	'standalone quick-create uses the shared valid blank Canvas payload',
+);
+assertions += 1;
+assert.deepEqual(
+	standaloneRegistry.getRecords()[0]?.slots.map((slot) => [
+		slot.version,
+		slot.member?.path,
+	]),
+	[
+		[1, 'Fresh/Board.canvas'],
+		[2, 'Fresh/Board (V2).canvas'],
+	],
+	'standalone quick-create atomically registers the existing note as V1 and the new file as V2',
+);
+assertions += 1;
+equal(
+	standaloneOpenedPath,
+	'Fresh/Board (V2).canvas',
+	'the newly committed V2 opens after registration',
+);
+equal(standaloneFilesChanged, 1, 'successful standalone creation refreshes file UI once');
+
+standaloneClick = null;
+modalTestHarness.lastOpened = null;
+standaloneHarness.ensureStandaloneAction(standaloneView, true);
+check(standaloneClick, 'an incomplete relationship receives a repair action');
+(standaloneClick as unknown as () => void)();
+equal(
+	standaloneManageCalls,
+	1,
+	'only the explicit repair action routes into Version management',
+);
+equal(
+	modalTestHarness.lastOpened,
+	null,
+	'the repair action does not masquerade as quick-create',
+);
+
+const initialRollbackVault = new Vault([
+	'Rollback/Existing.md',
+]) as unknown as Vault;
+const initialRollbackV1 = initialRollbackVault.getFileByPath(
+	'Rollback/Existing.md',
+);
+check(initialRollbackV1, 'initial rollback fixture has its original note');
+const initialRollbackRegistry = new VersionRegistry(
+	initialRollbackVault,
+	[],
+	async () => {
+		throw new Error('registry save failed');
+	},
+);
+const initialRollbackDecorator = new VersionViewDecorator(
+	makeCreationApp(initialRollbackVault),
+	initialRollbackRegistry.index,
+	initialRollbackRegistry,
+	() => '{{name}} (V{{version}})',
+	() => undefined,
+	() => undefined,
+	() => undefined,
+	() => undefined,
+	() => undefined,
+	new VersionI18n('en'),
+);
+const initialRollbackHarness = initialRollbackDecorator as unknown as {
+	createInitialVersion(
+		view: FileView,
+		v1: TFile,
+		filename: string,
+		format: 'markdown' | 'canvas' | 'excalidraw',
+	): Promise<boolean>;
+	refresh(): void;
+};
+initialRollbackHarness.refresh = () => undefined;
+equal(
+	await initialRollbackHarness.createInitialVersion(
+		{
+			file: initialRollbackV1,
+			leaf: { openFile: async () => undefined },
+		} as unknown as FileView,
+		initialRollbackV1,
+		'Existing (V2)',
+		'markdown',
+	),
+	false,
+	'initial quick-create reports a failed registry commit',
+);
+equal(
+	initialRollbackVault.getFileByPath('Rollback/Existing (V2).md'),
+	null,
+	'a failed initial registry commit rolls back only its unchanged new file',
+);
+equal(
+	initialRollbackVault.getFileByPath('Rollback/Existing.md'),
+	initialRollbackV1,
+	'a failed initial registry commit preserves the user\'s original note',
+);
+equal(
+	initialRollbackRegistry.getRecords().length,
+	0,
+	'a failed initial registry commit leaves no partial V1/V2 relationship',
+);
+
 const partialMovePlans = buildMovePlans(visualGroup, '白板所在');
 equal(
 	partialMovePlans.length,
@@ -3176,6 +3398,35 @@ equal(closeGuardState.closeCalls, 0, 'Escape/backdrop/Cancel close is ignored du
 closeGuardState.submitting = false;
 closeGuardModal.close();
 equal(closeGuardState.closeCalls, 1, 'modal can close again after submission settles');
+
+const pointerFocusListeners = new Map<string, () => void>();
+const pointerFocusClasses = new Set<string>();
+const pointerFocusControl = {
+	addEventListener: (type: string, listener: () => void) => {
+		pointerFocusListeners.set(type, listener);
+	},
+	classList: {
+		add: (className: string) => pointerFocusClasses.add(className),
+		remove: (className: string) => pointerFocusClasses.delete(className),
+	},
+} as unknown as HTMLElement;
+trackPointerFocus(pointerFocusControl);
+pointerFocusListeners.get('pointerdown')?.();
+check(
+	pointerFocusClasses.has('is-pointer-focused'),
+	'pointer interaction marks the format select so its persistent focus ring can be suppressed',
+);
+pointerFocusListeners.get('keydown')?.();
+check(
+	!pointerFocusClasses.has('is-pointer-focused'),
+	'keyboard interaction restores the native focus-visible presentation',
+);
+pointerFocusListeners.get('pointerdown')?.();
+pointerFocusListeners.get('blur')?.();
+check(
+	!pointerFocusClasses.has('is-pointer-focused'),
+	'leaving the format select clears its pointer-focus state',
+);
 
 console.log(`Version model tests passed: ${assertions} assertions`);
 }
