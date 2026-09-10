@@ -14,12 +14,16 @@ import {
 	getOverallVersion,
 	getMissingVersions,
 	getNextVersion,
+	isVersionGroupExactlyResolved,
 	MAX_VERSION,
 	VersionFile,
 	VersionGroup,
 	VersionIndex,
 } from '../version-index';
-import { VersionRegistry } from '../version-registry';
+import {
+	type VersionAppendExpectation,
+	VersionRegistry,
+} from '../version-registry';
 import { isVersionableFile } from '../version-file-types';
 import { setMenuItemWarning } from '../menu-item-warning';
 import {
@@ -48,6 +52,12 @@ interface ViewControls {
 	scrollDownCueEl: HTMLElement;
 	scrollUpCueEl: HTMLElement;
 	tabsEl: HTMLElement;
+}
+
+interface VersionCreationTarget {
+	expectation: VersionAppendExpectation;
+	folderPath: string;
+	sourceFile: TFile;
 }
 
 const VERSION_VIEW_TYPE_CLASSES = [
@@ -145,11 +155,38 @@ export class VersionViewDecorator {
 		}
 	}
 
+	/**
+	 * Open the same format-aware V2 flow used by the standalone toolbar action.
+	 * File-menu callbacks can outlive the menu state they were built from, so
+	 * both this entrypoint and the final submit re-check that the live file is
+	 * still completely outside every registered relationship.
+	 */
+	openInitialVersionModalForFile(file: TFile): void {
+		if (!this.isLiveUnregisteredFile(file)) {
+			this.refresh();
+			return;
+		}
+
+		const openView = this.findOpenFileView(file);
+		if (openView) {
+			this.openInitialVersionModal(openView);
+			return;
+		}
+
+		void this.openFileThenInitialVersionModal(file);
+	}
+
 	private renderControls(view: FileView, group: VersionGroup): void {
 		const controls = this.ensureControls(view);
+		// A healthy precision-compatible relationship is safe for the dedicated
+		// append-only transaction. Keep the add action available without relaxing
+		// the exact-identity gates used by reassignment or destructive actions.
+		controls.actionEl.classList.remove('is-disabled');
+		controls.actionEl.removeAttribute('aria-disabled');
 		controls.labelEl.textContent = this.i18n.t('view.versionsAria');
 		const signature = JSON.stringify([
 			group.id,
+			group.identityStatus,
 			...group.versions.map((member) => [member.version, member.path]),
 		]);
 		const existingButtons = [
@@ -186,7 +223,7 @@ export class VersionViewDecorator {
 			});
 			button.addEventListener('contextmenu', (event) => {
 				event.preventDefault();
-				this.openVersionMenu(event, view, group, versionFile);
+				this.openVersionMenu(event, view, versionFile);
 			});
 		}
 		this.scheduleOverflowCueUpdate(controls);
@@ -203,7 +240,9 @@ export class VersionViewDecorator {
 			topic: group.topic,
 			version: versionFile.version,
 		});
-		const tooltip = `${openLabel} · ${this.i18n.t('view.versionActions')}`;
+		const tooltip = isVersionGroupExactlyResolved(group)
+			? `${openLabel} · ${this.i18n.t('view.versionActions')}`
+			: openLabel;
 		button.ariaLabel = tooltip;
 		button.removeAttribute('title');
 		setTooltip(button, tooltip, { placement: 'left' });
@@ -437,7 +476,7 @@ export class VersionViewDecorator {
 		// The standalone action can outlive one registry refresh. Never turn a
 		// stale click into a second relationship or silently route an ordinary
 		// note through Version management.
-		if (this.index.getGroupForFile(v1)) {
+		if (!this.isLiveUnregisteredFile(v1)) {
 			this.refresh();
 			return;
 		}
@@ -478,7 +517,7 @@ export class VersionViewDecorator {
 		filename: string,
 		format: VersionFileFormat,
 	): Promise<boolean> {
-		if (this.index.getGroupForFile(v1)) {
+		if (!this.isLiveUnregisteredFile(v1)) {
 			this.refresh();
 			return false;
 		}
@@ -531,6 +570,62 @@ export class VersionViewDecorator {
 		return true;
 	}
 
+	private isLiveUnregisteredFile(file: TFile): boolean {
+		return (
+			this.app.vault.getFileByPath(file.path) === file &&
+			isVersionableFile(file) &&
+			!this.index.getGroupForFile(file) &&
+			!this.registry.getRecords().some((record) => record.slots.some(
+				(slot) => slot.member?.path === file.path,
+			))
+		);
+	}
+
+	private findOpenFileView(file: TFile): FileView | null {
+		let match: FileView | null = null;
+		this.app.workspace.iterateAllLeaves((leaf) => {
+			if (match || !(leaf.view instanceof FileView) || leaf.view.file !== file) {
+				return;
+			}
+			const root = leaf.getRoot();
+			if (
+				root === this.app.workspace.leftSplit ||
+				root === this.app.workspace.rightSplit ||
+				!isEditableVersionViewType(leaf.view.getViewType())
+			) {
+				return;
+			}
+			match = leaf.view;
+		});
+		return match;
+	}
+
+	private async openFileThenInitialVersionModal(file: TFile): Promise<void> {
+		try {
+			if (!this.isLiveUnregisteredFile(file)) {
+				this.refresh();
+				return;
+			}
+			const leaf = this.app.workspace.getLeaf(false);
+			await leaf.openFile(file, { active: true });
+			if (!this.isLiveUnregisteredFile(file)) {
+				this.refresh();
+				return;
+			}
+			if (
+				leaf.view instanceof FileView &&
+				leaf.view.file === file &&
+				isEditableVersionViewType(leaf.view.getViewType())
+			) {
+				this.openInitialVersionModal(leaf.view);
+			}
+		} catch (error) {
+			new Notice(this.i18n.t('view.openFailed', {
+				message: getErrorMessage(error),
+			}));
+		}
+	}
+
 	private showInitialCreationFailure(error: unknown): void {
 		if (
 			error instanceof VersionFileCreationError &&
@@ -548,24 +643,53 @@ export class VersionViewDecorator {
 	private openVersionMenu(
 		event: MouseEvent,
 		_view: FileView,
-		group: VersionGroup,
 		versionFile: VersionFile,
 	): void {
-		new Menu()
-			.addItem((item) =>
+		const current = this.index.getGroupForFile(versionFile.file);
+		if (!current || current.status !== 'healthy') {
+			new Notice(this.i18n.t('view.repairVersions'));
+			return;
+		}
+		const currentVersion = current.versions.find(
+			(member) => member.file === versionFile.file,
+		);
+		if (!currentVersion) {
+			new Notice(this.i18n.t('view.repairVersions'));
+			return;
+		}
+		const menu = new Menu();
+		if (!isVersionGroupExactlyResolved(current)) {
+			menu
+				.addItem((item) =>
+					item
+						.setTitle(this.i18n.t('fileExplorer.manageVersions'))
+						.setIcon('list-tree')
+						.onClick(() => this.onManage(currentVersion.file)),
+				)
+				.addItem((item) =>
+					item
+						.setTitle(this.i18n.t('command.showBacklinks'))
+						.setIcon('links-coming-in')
+						.onClick(() => this.onShowBacklinks(current)),
+				)
+				.showAtMouseEvent(event);
+			return;
+		}
+
+		menu.addItem((item) =>
 				item
 					.setTitle(this.i18n.t('view.fileActionsForVersion', {
-						version: versionFile.version,
+						version: currentVersion.version,
 					}))
 					.setIcon('list-checks')
-					.onClick(() => this.onFileActions(group, versionFile.file)),
+					.onClick(() => this.onFileActions(current, currentVersion.file)),
 			)
 			.addSeparator()
 			.addItem((item) => {
 				item
 					.setTitle(this.i18n.t('fileExplorer.deleteVersions'))
 					.setIcon('trash-2')
-					.onClick(() => this.onDeleteVersions(group, versionFile.file));
+					.onClick(() => this.onDeleteVersions(current, currentVersion.file));
 				setMenuItemWarning(item);
 			})
 			.showAtMouseEvent(event);
@@ -592,6 +716,10 @@ export class VersionViewDecorator {
 
 		const group = this.index.getGroupForFile(view.file);
 		if (!group || group.status !== 'healthy') {
+			if (group) {
+				new Notice(this.i18n.t('view.repairVersions'));
+			}
+			this.refresh();
 			return;
 		}
 
@@ -667,11 +795,35 @@ export class VersionViewDecorator {
 		version: number,
 		fillsGap: boolean,
 	): void {
-		const v1 = getOverallVersion(group);
-		if (!v1 || version < 1 || version > MAX_VERSION) {
+		if (version < 1 || version > MAX_VERSION) {
 			new Notice(this.i18n.t('view.range', { version: MAX_VERSION }));
 			return;
 		}
+		const current = this.index.getGroupById(group.id);
+		const expectation = current?.status === 'healthy'
+			? this.registry.captureAppendExpectation(current.id)
+			: null;
+		const v1 = current ? getOverallVersion(current) : null;
+		if (!current || !expectation || !v1) {
+			new Notice(this.i18n.t('view.repairVersions'));
+			this.refresh();
+			return;
+		}
+		if (current.versions.some((item) => item.version === version)) {
+			new Notice(this.i18n.t('view.alreadyExists', { version }));
+			this.refresh();
+			return;
+		}
+		const sourceFile = view.file && current.versions.some(
+			(member) => member.file === view.file,
+		)
+			? view.file
+			: v1.file;
+		const target: VersionCreationTarget = {
+			expectation,
+			folderPath: current.folder,
+			sourceFile,
+		};
 		let defaultFilename: string;
 		try {
 			defaultFilename = formatVersionFilename(
@@ -689,10 +841,11 @@ export class VersionViewDecorator {
 			this.app,
 			version,
 			defaultFilename,
-			detectVersionFileFormat(view.file ?? v1.file) ?? 'markdown',
+			detectVersionFileFormat(sourceFile) ?? 'markdown',
 			fillsGap,
 			(filename, format) => this.createSpecificVersion(
 				view,
+				target,
 				version,
 				filename,
 				format,
@@ -721,38 +874,33 @@ export class VersionViewDecorator {
 
 	private async createSpecificVersion(
 		view: FileView,
+		target: VersionCreationTarget,
 		version: number,
 		filename: string,
 		format: VersionFileFormat,
 	): Promise<boolean> {
-		if (!view.file || version < 1 || version > MAX_VERSION) {
+		if (version < 1 || version > MAX_VERSION) {
 			new Notice(this.i18n.t('view.range', { version: MAX_VERSION }));
-			return false;
-		}
-
-		const group = this.index.getGroupForFile(view.file);
-		if (!group || group.status !== 'healthy') {
-			return false;
-		}
-
-		if (group.versions.some((item) => item.version === version)) {
-			new Notice(this.i18n.t('view.alreadyExists', { version }));
 			return false;
 		}
 
 		let result: RegisteredVersionFileResult;
 		try {
-			if (view instanceof MarkdownView) {
+			if (view instanceof MarkdownView && view.file === target.sourceFile) {
 				await view.save();
 			}
 			result = await createAndRegisterVersionFile(
 				this.app,
 				{
-					folderPath: group.folder,
+					folderPath: target.folderPath,
 					format,
 					stem: filename,
 				},
-				(file) => this.registry.addMember(group.id, version, file),
+				(file) => this.registry.appendMemberToResolvedSeries(
+					target.expectation,
+					version,
+					file,
+				),
 				(file) => this.app.fileManager.trashFile(file),
 				(file) => view.leaf.openFile(file, { active: true }),
 			);

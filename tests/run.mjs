@@ -44,7 +44,7 @@ function verifyI18nCatalogs(root) {
 		da: readCatalog(path.join(root, 'src/locales/da.ts'), 'DA'),
 		ja: readCatalog(path.join(root, 'src/locales/ja.ts'), 'JA'),
 	};
-	const expectedKeyCount = 223;
+	const expectedKeyCount = 226;
 	const referenceKeys = Object.keys(catalogs.en).sort();
 	assert.equal(
 		referenceKeys.length,
@@ -116,6 +116,10 @@ function verifyI18nCatalogs(root) {
 			'fileExplorer.deleteVersions': /choose version files.*trash/iu,
 			'actions.delete': /choose version files.*trash/iu,
 			'manage.deleteSlot': /keep its file/iu,
+			'manage.dissolve': /^Stop version management$/u,
+			'manage.dissolveConfirmTitle': /^Stop managing this version series\?$/u,
+			'manage.dissolveConfirmDescription': /No files.*deleted.*contents modified.*released files may be moved/iu,
+			'manage.dissolved': /management stopped.*No files.*deleted.*contents modified.*may have been moved/iu,
 			'view.seriesIncompleteAfterDelete': /version file.*remaining files.*visible.*repair/iu,
 			'view.identityMigrationFailed': /files remain visible.*repair/iu,
 		},
@@ -127,6 +131,10 @@ function verifyI18nCatalogs(root) {
 			'fileExplorer.deleteVersions': /选择版本文件.*废纸篓/u,
 			'actions.delete': /选择版本文件.*废纸篓/u,
 			'manage.deleteSlot': /保留文件/u,
+			'manage.dissolve': /^停止版本管理$/u,
+			'manage.dissolveConfirmTitle': /^要停止管理这个版本系列吗？$/u,
+			'manage.dissolveConfirmDescription': /不会删除任何文件.*不会修改文件内容.*可能.*移动/u,
+			'manage.dissolved': /已停止版本管理.*没有删除任何文件.*没有修改文件内容.*可能.*移动/u,
 			'view.seriesIncompleteAfterDelete': /版本文件.*剩余文件.*可见.*修复/u,
 			'view.identityMigrationFailed': /文件将保持可见.*修复/u,
 		},
@@ -138,6 +146,10 @@ function verifyI18nCatalogs(root) {
 			'fileExplorer.deleteVersions': /vælg versionsfiler.*papirkurv/iu,
 			'actions.delete': /vælg versionsfiler.*papirkurv/iu,
 			'manage.deleteSlot': /behold filen/iu,
+			'manage.dissolve': /^Stop versionsstyring$/u,
+			'manage.dissolveConfirmTitle': /^Stop versionsstyringen for denne serie\?$/u,
+			'manage.dissolveConfirmDescription': /Ingen filer slettes.*filindholdet ændres ikke.*kan blive flyttet/iu,
+			'manage.dissolved': /Versionsstyringen er stoppet.*Ingen filer blev slettet.*filindholdet blev ikke ændret.*kan være blevet flyttet/iu,
 			'view.seriesIncompleteAfterDelete': /versionsfil.*resterende filer.*synlige.*reparere/iu,
 			'view.identityMigrationFailed': /filer forbliver synlige.*reparere/iu,
 		},
@@ -149,6 +161,10 @@ function verifyI18nCatalogs(root) {
 			'fileExplorer.deleteVersions': /ゴミ箱.*バージョンファイル.*選択/u,
 			'actions.delete': /ゴミ箱.*バージョンファイル.*選択/u,
 			'manage.deleteSlot': /ファイルは保持/u,
+			'manage.dissolve': /^バージョン管理を停止$/u,
+			'manage.dissolveConfirmTitle': /^このシリーズのバージョン管理を停止しますか？$/u,
+			'manage.dissolveConfirmDescription': /ファイル.*削除.*内容.*変更.*ありません.*移動される場合/u,
+			'manage.dissolved': /バージョン管理を停止.*削除.*変更.*行っていません.*移動された場合/u,
 			'view.seriesIncompleteAfterDelete': /バージョンファイル.*残りのファイル.*表示.*修復/u,
 			'view.identityMigrationFailed': /ファイルは表示されたまま.*修復/u,
 		},
@@ -319,3 +335,5 @@ function extractPlaceholders(value) {
 		.map((match) => match[1])
 		.sort();
 }
+
+await import('./excalidraw-preview-run.mjs');

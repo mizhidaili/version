@@ -125,12 +125,13 @@ export const JA: Record<TranslationKey, string> = {
 	'manage.releaseCollision':
 		'{{destination}} に同名のファイルがあるため、{{name}} をシリーズから外せません。',
 	'manage.releaseMoveFailed':
-		'バージョンの関連付けは保存しましたが、シリーズから外したファイルを移動できませんでした（{{count}} 件）。元の場所で引き続き読めます。',
+		'バージョンの関連付けは保存しましたが、シリーズから外したファイルの移動を完了できませんでした（{{count}} 件）。通常のファイルとして現在の場所に残り、引き続き読めます。',
 	'manage.rollbackFailed':
 		'保存に失敗した後、新しく作成した空ファイル {{count}} 件を削除できませんでした。ファイルは表示されたままで、引き続き読めます。',
 	'manage.slotAria': 'バージョン {{version}} のスロット',
 	'manage.dragVersion': 'ドラッグしてバージョンの関連付けを変更',
 	'manage.missing': '見つかりません：{{name}}',
+	'manage.identityConflict': '識別情報の競合：{{name}}',
 	'manage.createdOnDone': '［完了］を選ぶと作成されます',
 	'manage.remove': 'このシリーズから外す',
 	'manage.move': 'バージョンの位置を変更',
@@ -141,13 +142,13 @@ export const JA: Record<TranslationKey, string> = {
 	'manage.keyboardMoved': '{{label}}を{{version}}に移動しました。',
 	'manage.keyboardCancelled': '{{label}}の移動をキャンセルしました。',
 	'manage.done': '完了',
-	'manage.dissolve': 'シリーズを解除',
-	'manage.dissolveConfirmTitle': 'このバージョンシリーズを解除しますか？',
+	'manage.dissolve': 'バージョン管理を停止',
+	'manage.dissolveConfirmTitle': 'このシリーズのバージョン管理を停止しますか？',
 	'manage.dissolveConfirmDescription':
-		'V1 だけが残っています。続行すると Version の関連付けは解除されますが、メンバーファイルは削除も変更もされません。',
+		'V1 だけが残っています。続行すると、このシリーズに対する Version の管理を停止します。ファイルが削除されたり内容が変更されたりすることはありませんが、管理対象から外れたファイルは Version の設定に従って移動される場合があります。',
 	'manage.keepSeries': 'シリーズを維持',
 	'manage.dissolved':
-		'バージョンの関連付けを解除しました。ファイルは変更していません。',
+		'バージョン管理を停止しました。ファイルの削除や内容の変更は行っていませんが、管理対象から外れたファイルは Version の設定に従って移動された場合があります。',
 	'manage.v1Required': 'V1 には既存のファイルを選んでください。',
 	'manage.twoVersionsRequired':
 		'バージョンシリーズを作成するには、ファイルを 2 件以上追加してください。',
@@ -158,6 +159,8 @@ export const JA: Record<TranslationKey, string> = {
 		'この空ファイルはまだ作成されていません。［完了］を選ぶと作成されます。',
 	'manage.missingPreview':
 		'登録済みのファイルが {{path}} に見つかりません。正しいファイルをこのスロットにドラッグして修復してください。',
+	'manage.identityConflictPreview':
+		'{{path}} にファイルはありますが、登録されたファイルの識別情報と一致しません。このファイルで関連付けを修復する意図がある場合のみ、このスロットにドラッグしてください。',
 	'manage.invalidName': '新しいファイル名が無効です。',
 	'manage.nameExists': '{{path}} はすでに存在します。',
 	'manage.saved': 'バージョンの関連付けを保存しました。',
@@ -268,6 +271,8 @@ export const JA: Record<TranslationKey, string> = {
 		'ファイルの移動または名前変更後にバージョンの関連付けを更新できませんでした。影響を受けたファイルはすべて表示されたままです。{{message}}',
 	'view.identityMigrationFailed':
 		'以前のメンバーファイルの識別情報を確認できませんでした。影響を受けたファイルは表示されたままです。バージョン管理を開いて関連付けを修復してください。{{message}}',
+	'view.externalSettingsReloadFailed':
+		'同期されたプラグインデータの再読み込みを完了できませんでした。同期完了後に Obsidian を再起動してください。{{message}}',
 	'view.seriesIncompleteAfterDelete':
 		'Version の安全確認ダイアログを使わずに、バージョンファイルが削除されました。残りのファイルは表示されています。欠けたファイルを復元するか、バージョン管理を開いて関連付けを修復してください。',
 	'view.deleteV1Warning':

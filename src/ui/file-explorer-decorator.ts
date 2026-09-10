@@ -6,7 +6,20 @@ import {
 	VersionIndex,
 } from '../version-index';
 
-const FILE_TITLE_SELECTOR = '.nav-file-title[data-path]';
+const FILE_EXPLORER_CONTAINER_SELECTOR = '.nav-files-container';
+const FILE_TITLE_SELECTOR = '.nav-file-title';
+
+/**
+ * Desktop currently stores the path on the title itself. The mobile drawer can
+ * mount the same title with the path on its owning row while it is being
+ * virtualized, so accept either DOM shape without deriving anything from the
+ * displayed filename.
+ */
+export function getFileExplorerTitlePath(titleEl: HTMLElement): string | null {
+	return titleEl.dataset.path ??
+		titleEl.closest<HTMLElement>('.nav-file[data-path]')?.dataset.path ??
+		null;
+}
 
 /**
  * File Explorer has no public API for hiding individual rows or adding a badge.
@@ -23,6 +36,10 @@ export interface FileExplorerVisibilityPlan {
 export function buildFileExplorerVisibilityPlan(
 	group: VersionGroup,
 ): FileExplorerVisibilityPlan | null {
+	// This plan changes only mounted File Explorer rows. A healthy group whose
+	// identities resolve through the narrow cross-device compatibility rule can
+	// therefore use its complete registry paths here; mutation workflows remain
+	// gated by isVersionGroupExactlyResolved at their own call sites.
 	if (group.status !== 'healthy') {
 		return null;
 	}
@@ -42,6 +59,8 @@ export function buildFileExplorerVisibilityPlan(
 
 export class FileExplorerDecorator {
 	private destroyed = false;
+	private discoveryObserver: MutationObserver | null = null;
+	private discoveryRoot: HTMLElement | null = null;
 	private readonly observers = new Map<HTMLElement, MutationObserver>();
 	private refreshFrame: number | null = null;
 	private refreshQueued = false;
@@ -56,6 +75,7 @@ export class FileExplorerDecorator {
 		if (this.destroyed) {
 			return;
 		}
+		this.observeWorkspaceForExplorerRoots();
 		for (const observer of this.observers.values()) {
 			observer.disconnect();
 		}
@@ -70,6 +90,9 @@ export class FileExplorerDecorator {
 
 	destroy(): void {
 		this.destroyed = true;
+		this.discoveryObserver?.disconnect();
+		this.discoveryObserver = null;
+		this.discoveryRoot = null;
 		if (this.refreshFrame !== null) {
 			window.cancelAnimationFrame(this.refreshFrame);
 			this.refreshFrame = null;
@@ -86,20 +109,35 @@ export class FileExplorerDecorator {
 	}
 
 	private getRoots(): HTMLElement[] {
-		return this.app.workspace
-			.getLeavesOfType('file-explorer')
-			.map((leaf) => leaf.view.containerEl);
+		const roots = new Set(
+			this.app.workspace
+				.getLeavesOfType('file-explorer')
+				.map((leaf) => leaf.view.containerEl),
+		);
+		const workspaceRoot = this.app.workspace.containerEl;
+		if (!workspaceRoot) {
+			return [...roots];
+		}
+
+		// On mobile the drawer may mount its File Explorer content before (or
+		// without) getLeavesOfType exposing a live leaf. Discover the narrowly
+		// scoped native container as a fallback and avoid decorating it twice
+		// when a normal leaf root already owns it.
+		for (const container of workspaceRoot.querySelectorAll<HTMLElement>(
+			FILE_EXPLORER_CONTAINER_SELECTOR,
+		)) {
+			if (![...roots].some((root) => root.contains(container))) {
+				roots.add(container);
+			}
+		}
+		return [...roots];
 	}
 
 	private decorateRoot(root: HTMLElement): void {
 		const titlesByPath = new Map<string, HTMLElement>();
 
-		for (const element of root.querySelectorAll(FILE_TITLE_SELECTOR)) {
-			if (!element.instanceOf(HTMLElement)) {
-				continue;
-			}
-
-			const path = element.dataset.path;
+		for (const element of root.querySelectorAll<HTMLElement>(FILE_TITLE_SELECTOR)) {
+			const path = getFileExplorerTitlePath(element);
 			if (path) {
 				titlesByPath.set(path, element);
 			}
@@ -173,7 +211,7 @@ export class FileExplorerDecorator {
 			title.removeClass('version-theme-active');
 			if (
 				title.instanceOf(HTMLElement) &&
-				title.dataset.path !== activePath
+				getFileExplorerTitlePath(title) !== activePath
 			) {
 				title.removeClass('is-active');
 			}
@@ -203,6 +241,49 @@ export class FileExplorerDecorator {
 			subtree: true,
 		});
 		this.observers.set(root, observer);
+	}
+
+	private observeWorkspaceForExplorerRoots(): void {
+		const root = this.app.workspace.containerEl;
+		if (!root || this.discoveryRoot === root) {
+			return;
+		}
+
+		this.discoveryObserver?.disconnect();
+		this.discoveryObserver = null;
+		this.discoveryRoot = root;
+		const Observer = root.ownerDocument.defaultView?.MutationObserver;
+		if (!Observer) {
+			return;
+		}
+
+		this.discoveryObserver = new Observer((records) => {
+			for (const record of records) {
+				for (const node of [...record.addedNodes, ...record.removedNodes]) {
+					if (this.containsFileExplorerMarkup(node)) {
+						this.queueRefresh();
+						return;
+					}
+				}
+			}
+		});
+		this.discoveryObserver.observe(root, {
+			childList: true,
+			subtree: true,
+		});
+	}
+
+	private containsFileExplorerMarkup(node: Node): boolean {
+		if (!node.instanceOf(HTMLElement)) {
+			return false;
+		}
+		return (
+			node.matches(FILE_EXPLORER_CONTAINER_SELECTOR) ||
+			node.matches(FILE_TITLE_SELECTOR) ||
+			Boolean(node.querySelector(
+				`${FILE_EXPLORER_CONTAINER_SELECTOR}, ${FILE_TITLE_SELECTOR}`,
+			))
+		);
 	}
 
 	private queueRefresh(): void {

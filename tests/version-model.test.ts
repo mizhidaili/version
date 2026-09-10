@@ -2,17 +2,27 @@ import assert from 'node:assert/strict';
 import { FileView, Modal, TFile, Vault } from 'obsidian';
 import { findRecoveryPath } from '../src/import-recovered-markdown';
 import {
+	cloneSeriesRecords,
 	isValidFilenameTemplate,
+	isVersionPluginDataSnapshot,
+	memberMatchesFile,
+	memberResolvesToFile,
 	memberRecordFromFile,
+	mergeExternalPluginData,
+	normalizeExternalPluginData,
 	normalizePluginData,
 	VersionMemberRecord,
+	VersionSeriesRecord,
+	versionPluginDataEqual,
 } from '../src/version-data';
 import {
 	getMissingVersions,
 	getNextVersion,
+	isVersionGroupExactlyResolved,
 	VersionIndex,
 } from '../src/version-index';
 import { VersionRegistry } from '../src/version-registry';
+import { getVersionFileMenuState } from '../src/version-file-menu-state';
 import { SerializedDataStore } from '../src/serialized-data-store';
 import { filterAllowedSeries } from '../src/series-choice-filter';
 import {
@@ -58,6 +68,7 @@ import {
 import {
 	buildFileExplorerVisibilityPlan,
 	FileExplorerDecorator,
+	getFileExplorerTitlePath,
 } from '../src/ui/file-explorer-decorator';
 import {
 	collectBacklinkTargets,
@@ -970,6 +981,30 @@ equal(
 	null,
 	'invalid groups fail visible instead of hiding member rows',
 );
+equal(
+	getFileExplorerTitlePath({
+		dataset: { path: 'Desktop/Topic.md' },
+		closest: () => null,
+	} as unknown as HTMLElement),
+	'Desktop/Topic.md',
+	'desktop File Explorer titles use their own exact data-path',
+);
+equal(
+	getFileExplorerTitlePath({
+		dataset: {},
+		closest: () => ({ dataset: { path: 'Mobile/Topic.md' } }),
+	} as unknown as HTMLElement),
+	'Mobile/Topic.md',
+	'mobile drawer titles may resolve the exact data-path from their owning row',
+);
+equal(
+	getFileExplorerTitlePath({
+		dataset: {},
+		closest: () => null,
+	} as unknown as HTMLElement),
+	null,
+	'File Explorer DOM without an exact data-path is never guessed from its text',
+);
 
 function makeExplorerTitleFixture(path: string): {
 	badges: Array<{ attributes: Map<string, string>; text: string }>;
@@ -1014,6 +1049,35 @@ function makeExplorerTitleFixture(path: string): {
 	};
 }
 
+function makeMobileExplorerActiveTitleFixture(path: string): {
+	root: unknown;
+	titleClasses: Set<string>;
+} {
+	const titleClasses = new Set(['is-active', 'version-theme-active']);
+	const row = { dataset: { path } };
+	const title = {
+		dataset: {},
+		closest: (selector: string) =>
+			selector === '.nav-file[data-path]' ? row : null,
+		instanceOf: () => true,
+		removeClass: (...classes: string[]) => {
+			for (const className of classes) {
+				titleClasses.delete(className);
+			}
+		},
+	};
+	return {
+		root: {
+			querySelectorAll: (selector: string) =>
+				selector === '.version-theme-active' &&
+				titleClasses.has('version-theme-active')
+					? [title]
+					: [],
+		},
+		titleClasses,
+	};
+}
+
 const explorerDecorator = new FileExplorerDecorator(
 	{ workspace: { getActiveFile: () => null } } as never,
 	visibilityIndex,
@@ -1021,6 +1085,7 @@ const explorerDecorator = new FileExplorerDecorator(
 );
 const explorerHarness = explorerDecorator as unknown as {
 	decorateGroup(group: typeof visibilityGroup, titles: Map<string, unknown>): void;
+	getRoots(): unknown[];
 	observeRoot(root: unknown): void;
 };
 const collapsedV2Title = makeExplorerTitleFixture('Visible/Parallel.md');
@@ -1073,6 +1138,83 @@ equal(
 );
 equal(remountedV1Title.badges[0]?.text, '3', 'a remounted V1 receives one fresh count');
 
+let mobileActivePath = 'Collapsed/Representative.md';
+const mobileActiveDecorator = new FileExplorerDecorator(
+	{
+		workspace: {
+			getActiveFile: () => ({ path: mobileActivePath }),
+		},
+	} as never,
+	visibilityIndex,
+	new VersionI18n('en'),
+);
+const mobileActiveHarness = mobileActiveDecorator as unknown as {
+	clearRoot(root: unknown): void;
+};
+const originalHTMLElementDescriptor = Object.getOwnPropertyDescriptor(
+	globalThis,
+	'HTMLElement',
+);
+Object.defineProperty(globalThis, 'HTMLElement', {
+	configurable: true,
+	value: class ExplorerHTMLElementFixture {},
+});
+try {
+	const mobileActiveTitle = makeMobileExplorerActiveTitleFixture(
+		'Collapsed/Representative.md',
+	);
+	mobileActiveHarness.clearRoot(mobileActiveTitle.root);
+	equal(
+		mobileActiveTitle.titleClasses.has('version-theme-active'),
+		false,
+		'cleanup removes the Version-owned active marker from a mobile parent-path row',
+	);
+	equal(
+		mobileActiveTitle.titleClasses.has('is-active'),
+		true,
+		'cleanup preserves the native active highlight when the mobile parent path is current',
+	);
+
+	mobileActiveTitle.titleClasses.add('is-active');
+	mobileActiveTitle.titleClasses.add('version-theme-active');
+	mobileActivePath = 'Visible/Parallel.md';
+	mobileActiveHarness.clearRoot(mobileActiveTitle.root);
+	equal(
+		mobileActiveTitle.titleClasses.has('version-theme-active'),
+		false,
+		'switch cleanup removes the Version-owned marker from the former representative',
+	);
+	equal(
+		mobileActiveTitle.titleClasses.has('is-active'),
+		false,
+		'switch cleanup removes a stale mirrored highlight using the mobile parent path',
+	);
+
+	mobileActivePath = 'Collapsed/Representative.md';
+	const remountedMobileActiveTitle = makeMobileExplorerActiveTitleFixture(
+		'Collapsed/Representative.md',
+	);
+	mobileActiveHarness.clearRoot(remountedMobileActiveTitle.root);
+	equal(
+		remountedMobileActiveTitle.titleClasses.has('version-theme-active'),
+		false,
+		'a remounted mobile row clears its Version-owned active marker',
+	);
+	equal(
+		remountedMobileActiveTitle.titleClasses.has('is-active'),
+		true,
+		'a remounted mobile row preserves its native highlight from the parent data-path',
+	);
+} finally {
+	if (!originalHTMLElementDescriptor) {
+		Reflect.deleteProperty(globalThis, 'HTMLElement');
+	} else {
+		Object.defineProperty(globalThis, 'HTMLElement', {
+			...originalHTMLElementDescriptor,
+		});
+	}
+}
+
 let observedExplorerOptions: MutationObserverInit | null = null;
 class ExplorerMutationObserverFixture {
 	constructor(_callback: MutationCallback) {}
@@ -1095,6 +1237,38 @@ assert.deepEqual(
 		subtree: true,
 	},
 	'File Explorer observes child remounts and virtualized data-path reuse only',
+);
+assertions += 1;
+
+const fallbackExplorerContainer = {};
+const coveredExplorerContainer = {};
+const leafExplorerRoot = {
+	contains: (element: unknown) => element === coveredExplorerContainer,
+};
+const mobileRootDecorator = new FileExplorerDecorator(
+	{
+		workspace: {
+			containerEl: {
+				querySelectorAll: () => [
+					coveredExplorerContainer,
+					fallbackExplorerContainer,
+				],
+			},
+			getLeavesOfType: () => [{
+				view: { containerEl: leafExplorerRoot },
+			}],
+		},
+	} as never,
+	visibilityIndex,
+	new VersionI18n('en'),
+);
+const mobileRootHarness = mobileRootDecorator as unknown as {
+	getRoots(): unknown[];
+};
+assert.deepEqual(
+	mobileRootHarness.getRoots(),
+	[leafExplorerRoot, fallbackExplorerContainer],
+	'mobile drawer discovery adds a native File Explorer container only when no normal leaf root owns it',
 );
 assertions += 1;
 
@@ -1645,6 +1819,626 @@ equal(
 	'Cancel leaves no staged Canvas file in the vault',
 );
 
+const survivorOwnedVault = new Vault([
+	'Survivor owned/Topic.md',
+	'Survivor owned/V2.md',
+	'Survivor owned/Shared released.md',
+	'Survivor owned/T2.md',
+]) as unknown as Vault;
+const survivorOwnedReleased = survivorOwnedVault.getFileByPath(
+	'Survivor owned/Shared released.md',
+);
+check(survivorOwnedReleased, 'overlapping release fixture resolves the shared source');
+const survivorOwnedRecords = [
+	{
+		id: 'survivor-owned-s',
+		slots: [
+			{ member: memberAt(survivorOwnedVault, 'Survivor owned/Topic.md'), version: 1 },
+			{ member: memberAt(survivorOwnedVault, 'Survivor owned/V2.md'), version: 2 },
+			{ member: memberRecordFromFile(survivorOwnedReleased), version: 3 },
+		],
+	},
+	{
+		id: 'survivor-owned-t',
+		slots: [
+			{ member: memberRecordFromFile(survivorOwnedReleased), version: 1 },
+			{ member: memberAt(survivorOwnedVault, 'Survivor owned/T2.md'), version: 2 },
+		],
+	},
+];
+let survivorOwnedPersists = 0;
+const survivorOwnedRegistry = new VersionRegistry(
+	survivorOwnedVault,
+	survivorOwnedRecords,
+	async () => {
+		survivorOwnedPersists += 1;
+	},
+);
+let survivorOwnedRenameCalls = 0;
+const survivorOwnedModal = new VersionManagementModal(
+	{
+		fileManager: {
+			renameFile: async (file: TFile, to: string) => {
+				survivorOwnedRenameCalls += 1;
+				(survivorOwnedVault as unknown as InstanceType<typeof Vault>)
+					.rename(file.path, to);
+			},
+		},
+		vault: survivorOwnedVault,
+	} as never,
+	survivorOwnedRegistry,
+	survivorOwnedVault.getFileByPath('Survivor owned/Topic.md'),
+	'{{name}} (V{{version}})',
+	'vault-root',
+	new VersionI18n('en'),
+	() => undefined,
+	'survivor-owned-s',
+);
+const survivorOwnedHarness = survivorOwnedModal as unknown as {
+	deleteVersionSlot(version: number): void;
+	renderAll(): void;
+	submit(): Promise<void>;
+};
+survivorOwnedHarness.renderAll = () => undefined;
+survivorOwnedHarness.deleteVersionSlot(3);
+await survivorOwnedHarness.submit();
+equal(survivorOwnedPersists, 1, 'repair saves the remaining S relationship once');
+equal(
+	survivorOwnedRenameCalls,
+	0,
+	'a released source still owned by surviving T is never moved',
+);
+equal(
+	survivorOwnedVault.getFileByPath('Survivor owned/Shared released.md'),
+	survivorOwnedReleased,
+	'the surviving relationship keeps its shared source at the exact original path',
+);
+equal(
+	survivorOwnedVault.getFileByPath('Shared released.md'),
+	null,
+	'no destination file is created for a source still registered by T',
+);
+check(
+	survivorOwnedRegistry.getRecordById('survivor-owned-t')?.slots.some(
+		(slot) => slot.member?.path === 'Survivor owned/Shared released.md',
+	),
+	'the saved registry retains T ownership of the skipped source',
+);
+
+const preSubmitRenameVault = new Vault([
+	'Pre-submit rename/Topic.md',
+	'Pre-submit rename/V2.md',
+	'Pre-submit rename/Released.md',
+]) as unknown as Vault;
+const preSubmitRenamedFile = preSubmitRenameVault.getFileByPath(
+	'Pre-submit rename/Released.md',
+);
+check(preSubmitRenamedFile, 'pre-submit rename fixture resolves its released file');
+let preSubmitRenamePersists = 0;
+const preSubmitRenameRegistry = new VersionRegistry(
+	preSubmitRenameVault,
+	[{
+		id: 'pre-submit-rename',
+		slots: [
+			{ member: memberAt(preSubmitRenameVault, 'Pre-submit rename/Topic.md'), version: 1 },
+			{ member: memberAt(preSubmitRenameVault, 'Pre-submit rename/V2.md'), version: 2 },
+			{ member: memberRecordFromFile(preSubmitRenamedFile), version: 3 },
+		],
+	}],
+	async () => {
+		preSubmitRenamePersists += 1;
+	},
+);
+let preSubmitPhysicalRenameCalls = 0;
+const preSubmitRenameModal = new VersionManagementModal(
+	{
+		fileManager: {
+			renameFile: async (file: TFile, to: string) => {
+				preSubmitPhysicalRenameCalls += 1;
+				(preSubmitRenameVault as unknown as InstanceType<typeof Vault>)
+					.rename(file.path, to);
+			},
+		},
+		vault: preSubmitRenameVault,
+	} as never,
+	preSubmitRenameRegistry,
+	preSubmitRenameVault.getFileByPath('Pre-submit rename/Topic.md'),
+	'{{name}} (V{{version}})',
+	'vault-root',
+	new VersionI18n('en'),
+	() => undefined,
+);
+	const preSubmitRenameHarness = preSubmitRenameModal as unknown as {
+		deleteVersionSlot(version: number): void;
+		releasedByDeletedVersion: Map<TFile, { path: string }>;
+	renderAll(): void;
+	submit(): Promise<void>;
+};
+preSubmitRenameHarness.renderAll = () => undefined;
+preSubmitRenameHarness.deleteVersionSlot(3);
+equal(
+		preSubmitRenameHarness.releasedByDeletedVersion.get(preSubmitRenamedFile)?.path,
+	'Pre-submit rename/Released.md',
+	'deleting a slot captures its immutable source path immediately',
+);
+(preSubmitRenameVault as unknown as InstanceType<typeof Vault>).rename(
+	'Pre-submit rename/Released.md',
+	'External rename/Released.md',
+);
+await preSubmitRenameHarness.submit();
+equal(preSubmitRenamePersists, 1, 'the remaining relationship saves after the external rename');
+equal(
+	preSubmitPhysicalRenameCalls,
+	0,
+	'a released-file plan never follows a TFile renamed before submission',
+);
+equal(
+	preSubmitRenameVault.getFileByPath('External rename/Released.md'),
+	preSubmitRenamedFile,
+	'the externally renamed released file remains at its user-selected path',
+);
+equal(
+	preSubmitRenameVault.getFileByPath('Released.md'),
+	null,
+	'no stale release move recreates a vault-root destination',
+);
+equal(
+	preSubmitRenameRegistry.getRecordById('pre-submit-rename')?.slots.length,
+	2,
+	'the submitted relationship removes only the deleted slot',
+);
+
+const registeredReleaseDestinationVault = new Vault([
+	'Registered release/Topic.md',
+	'Registered release/V2.md',
+	'Registered release/Released.md',
+	'Registered release/T2.md',
+]) as unknown as Vault;
+const registeredReleaseSource = registeredReleaseDestinationVault.getFileByPath(
+	'Registered release/Released.md',
+);
+check(registeredReleaseSource, 'registry-only release fixture resolves its source');
+const registeredReleaseRecords = [
+	{
+		id: 'registered-release-s',
+		slots: [
+			{
+				member: memberAt(
+					registeredReleaseDestinationVault,
+					'Registered release/Topic.md',
+				),
+				version: 1,
+			},
+			{
+				member: memberAt(
+					registeredReleaseDestinationVault,
+					'Registered release/V2.md',
+				),
+				version: 2,
+			},
+			{ member: memberRecordFromFile(registeredReleaseSource), version: 3 },
+		],
+	},
+	{
+		id: 'registered-release-t',
+		slots: [
+			{ member: memberAt(registeredReleaseDestinationVault, 'Released.md'), version: 1 },
+			{
+				member: memberAt(
+					registeredReleaseDestinationVault,
+					'Registered release/T2.md',
+				),
+				version: 2,
+			},
+		],
+	},
+];
+let registeredReleasePersists = 0;
+let registeredReleaseRenames = 0;
+const registeredReleaseRegistry = new VersionRegistry(
+	registeredReleaseDestinationVault,
+	registeredReleaseRecords,
+	async () => {
+		registeredReleasePersists += 1;
+	},
+);
+const registeredReleaseModal = new VersionManagementModal(
+	{
+		fileManager: {
+			renameFile: async (file: TFile, to: string) => {
+				registeredReleaseRenames += 1;
+				(registeredReleaseDestinationVault as unknown as InstanceType<typeof Vault>)
+					.rename(file.path, to);
+			},
+		},
+		vault: registeredReleaseDestinationVault,
+	} as never,
+	registeredReleaseRegistry,
+	registeredReleaseDestinationVault.getFileByPath('Registered release/Topic.md'),
+	'{{name}} (V{{version}})',
+	'vault-root',
+	new VersionI18n('en'),
+	() => undefined,
+	'registered-release-s',
+);
+const registeredReleaseHarness = registeredReleaseModal as unknown as {
+	deleteVersionSlot(version: number): void;
+	renderAll(): void;
+	submit(): Promise<void>;
+};
+registeredReleaseHarness.renderAll = () => undefined;
+registeredReleaseHarness.deleteVersionSlot(3);
+await registeredReleaseHarness.submit();
+equal(
+	registeredReleaseDestinationVault.getFileByPath('Released.md'),
+	null,
+	'the registry-only release destination remains physically absent',
+);
+equal(
+	registeredReleaseRenames,
+	0,
+	'a registry-only release destination rejects the move before any rename',
+);
+equal(
+	registeredReleasePersists,
+	0,
+	'a registry-only release collision is rejected before relationship persistence',
+);
+equal(
+	registeredReleaseDestinationVault.getFileByPath(
+		'Registered release/Released.md',
+	),
+	registeredReleaseSource,
+	'the released source remains readable after the registry-only collision',
+);
+equal(
+	registeredReleaseRegistry.getRecordById('registered-release-s')?.slots.length,
+	3,
+	'the rejected release submission leaves S unchanged',
+);
+
+for (const race of ['source-renamed', 'destination-occupied'] as const) {
+	const folder = race === 'source-renamed'
+		? 'Persist source race'
+		: 'Persist destination race';
+	const sourcePath = `${folder}/Released.md`;
+	const destinationPath = 'Released.md';
+	const raceVault = new Vault([
+		`${folder}/Topic.md`,
+		`${folder}/V2.md`,
+		sourcePath,
+	]) as unknown as Vault;
+	const raceReleased = raceVault.getFileByPath(sourcePath);
+	check(raceReleased, `${race} fixture resolves its released source`);
+	const raceRecord = {
+		id: `management-${race}`,
+		slots: [
+			{ member: memberAt(raceVault, `${folder}/Topic.md`), version: 1 },
+			{ member: memberAt(raceVault, `${folder}/V2.md`), version: 2 },
+			{ member: memberRecordFromFile(raceReleased), version: 3 },
+		],
+	};
+	let signalPersistStarted!: () => void;
+	const persistStarted = new Promise<void>((resolve) => {
+		signalPersistStarted = resolve;
+	});
+	let releasePersist!: () => void;
+	const persistGate = new Promise<void>((resolve) => {
+		releasePersist = resolve;
+	});
+	const raceRegistry = new VersionRegistry(
+		raceVault,
+		[raceRecord],
+		async () => {
+			signalPersistStarted();
+			await persistGate;
+		},
+	);
+	let raceRenameCalls = 0;
+	let raceSavedCalls = 0;
+	const raceModal = new VersionManagementModal(
+		{
+			fileManager: {
+				renameFile: async (file: TFile, to: string) => {
+					raceRenameCalls += 1;
+					(raceVault as unknown as InstanceType<typeof Vault>)
+						.rename(file.path, to);
+				},
+			},
+			vault: raceVault,
+		} as never,
+		raceRegistry,
+		raceVault.getFileByPath(`${folder}/Topic.md`),
+		'{{name}} (V{{version}})',
+		'vault-root',
+		new VersionI18n('en'),
+		() => {
+			raceSavedCalls += 1;
+		},
+	);
+	const raceHarness = raceModal as unknown as {
+		deleteVersionSlot(version: number): void;
+		renderAll(): void;
+		submit(): Promise<void>;
+	};
+	raceHarness.renderAll = () => undefined;
+	raceHarness.deleteVersionSlot(3);
+	const raceSubmission = raceHarness.submit();
+	await persistStarted;
+	let occupiedDestination: TFile | null = null;
+	if (race === 'source-renamed') {
+		(raceVault as unknown as InstanceType<typeof Vault>).rename(
+			sourcePath,
+			`${folder}/Externally renamed.md`,
+		);
+	} else {
+		occupiedDestination = (raceVault as unknown as InstanceType<typeof Vault>)
+			.add(destinationPath, 'external occupant');
+	}
+	releasePersist();
+	await raceSubmission;
+	equal(
+		raceRenameCalls,
+		0,
+		`${race} during persistence prevents the stale released-file move`,
+	);
+	equal(raceSavedCalls, 1, `${race} still leaves the completed registry save visible`);
+	if (race === 'source-renamed') {
+		equal(
+			raceVault.getFileByPath(`${folder}/Externally renamed.md`),
+			raceReleased,
+			'a source renamed during persistence remains at its external destination',
+		);
+		equal(
+			raceVault.getFileByPath(destinationPath),
+			null,
+			'a stale plan does not create its old destination after the source moved',
+		);
+	} else {
+		equal(
+			raceVault.getFileByPath(sourcePath),
+			raceReleased,
+			'a source stays put when its destination becomes occupied during persistence',
+		);
+		equal(
+			raceVault.getFileByPath(destinationPath),
+			occupiedDestination,
+			'the external destination occupant is never overwritten',
+		);
+	}
+}
+
+for (const rollbackCase of [
+	'exact',
+	'source-occupied',
+	'destination-replaced',
+] as const) {
+	const rollbackVault = new Vault([
+		'Rollback source/A.md',
+		'Rollback source/B.md',
+	]) as unknown as Vault;
+	const rollbackA = rollbackVault.getFileByPath('Rollback source/A.md');
+	const rollbackB = rollbackVault.getFileByPath('Rollback source/B.md');
+	check(rollbackA, `${rollbackCase} rollback fixture resolves A`);
+	check(rollbackB, `${rollbackCase} rollback fixture resolves B`);
+	const rollbackRegistry = new VersionRegistry(
+		rollbackVault,
+		[],
+		async () => undefined,
+	);
+	let rollbackRenameCalls = 0;
+	let sourceReplacement: TFile | null = null;
+	let destinationReplacement: TFile | null = null;
+	const rollbackModal = new VersionManagementModal(
+		{
+			fileManager: {
+				renameFile: async (file: TFile, to: string) => {
+					rollbackRenameCalls += 1;
+					if (file === rollbackB) {
+						if (rollbackCase === 'source-occupied') {
+							sourceReplacement = (
+								rollbackVault as unknown as InstanceType<typeof Vault>
+							).add('Rollback source/A.md', 'replacement');
+						} else if (rollbackCase === 'destination-replaced') {
+							(rollbackVault as unknown as InstanceType<typeof Vault>).rename(
+								'Rollback destination/A.md',
+								'External location/A.md',
+							);
+							destinationReplacement = (
+								rollbackVault as unknown as InstanceType<typeof Vault>
+							).add('Rollback destination/A.md', 'replacement');
+						}
+						throw new Error('second move failed');
+					}
+					(rollbackVault as unknown as InstanceType<typeof Vault>)
+						.rename(file.path, to);
+				},
+			},
+			vault: rollbackVault,
+		} as never,
+		rollbackRegistry,
+		null,
+		'{{name}} (V{{version}})',
+		'vault-root',
+		new VersionI18n('en'),
+		() => undefined,
+	);
+	const rollbackHarness = rollbackModal as unknown as {
+		moveReleasedNotes(plans: Array<{
+			capture: ReturnType<typeof captureFile>;
+			file: TFile;
+			from: string;
+			to: string;
+		}>): Promise<number>;
+	};
+	const rollbackFailures = await rollbackHarness.moveReleasedNotes([
+		{
+			capture: captureFile(rollbackA),
+			file: rollbackA,
+			from: 'Rollback source/A.md',
+			to: 'Rollback destination/A.md',
+		},
+		{
+			capture: captureFile(rollbackB),
+			file: rollbackB,
+			from: 'Rollback source/B.md',
+			to: 'Rollback destination/B.md',
+		},
+	]);
+	equal(rollbackFailures, 2, `${rollbackCase} reports both interrupted move plans`);
+	if (rollbackCase === 'exact') {
+		equal(rollbackRenameCalls, 3, 'an exact destination is rolled back once');
+		equal(
+			rollbackVault.getFileByPath('Rollback source/A.md'),
+			rollbackA,
+			'exact rollback restores the captured TFile to its empty source',
+		);
+		equal(
+			rollbackVault.getFileByPath('Rollback destination/A.md'),
+			null,
+			'exact rollback clears the completed destination',
+		);
+	} else {
+		equal(
+			rollbackRenameCalls,
+			2,
+			`${rollbackCase} prevents rollback from moving the wrong file`,
+		);
+		if (rollbackCase === 'source-occupied') {
+			equal(
+				rollbackVault.getFileByPath('Rollback source/A.md'),
+				sourceReplacement,
+				'rollback never overwrites a newly occupied source',
+			);
+			equal(
+				rollbackVault.getFileByPath('Rollback destination/A.md'),
+				rollbackA,
+				'the captured file remains at its exact destination when source is occupied',
+			);
+		} else {
+			equal(
+				rollbackVault.getFileByPath('Rollback destination/A.md'),
+				destinationReplacement,
+				'rollback never follows or overwrites a replacement at the destination',
+			);
+			equal(
+				rollbackVault.getFileByPath('External location/A.md'),
+				rollbackA,
+				'the externally moved captured file remains at its new exact location',
+			);
+		}
+	}
+}
+
+const rollbackReloadVault = new Vault([
+	'Rollback reload source/A.md',
+	'Rollback reload source/B.md',
+	'Rollback reload/T2.md',
+]) as unknown as Vault;
+const rollbackReloadA = rollbackReloadVault.getFileByPath(
+	'Rollback reload source/A.md',
+);
+const rollbackReloadB = rollbackReloadVault.getFileByPath(
+	'Rollback reload source/B.md',
+);
+check(rollbackReloadA, 'reload rollback fixture resolves A');
+check(rollbackReloadB, 'reload rollback fixture resolves B');
+const rollbackReloadRegistry = new VersionRegistry(
+	rollbackReloadVault,
+	[],
+	async () => undefined,
+);
+let rollbackReloadRenameCalls = 0;
+const rollbackReloadModal = new VersionManagementModal(
+	{
+		fileManager: {
+			renameFile: async (file: TFile, to: string) => {
+				rollbackReloadRenameCalls += 1;
+				if (file === rollbackReloadB) {
+					await rollbackReloadRegistry.reload(async () => [{
+						id: 'rollback-reload-t',
+						slots: [
+							{
+								member: memberRecordFromFile(rollbackReloadA),
+								version: 1,
+							},
+							{
+								member: memberAt(
+									rollbackReloadVault,
+									'Rollback reload/T2.md',
+								),
+								version: 2,
+							},
+						],
+					}]);
+					throw new Error('second move failed after synchronized ownership');
+				}
+				(rollbackReloadVault as unknown as InstanceType<typeof Vault>)
+					.rename(file.path, to);
+			},
+		},
+		vault: rollbackReloadVault,
+	} as never,
+	rollbackReloadRegistry,
+	null,
+	'{{name}} (V{{version}})',
+	'vault-root',
+	new VersionI18n('en'),
+	() => undefined,
+);
+const rollbackReloadHarness = rollbackReloadModal as unknown as {
+	moveReleasedNotes(plans: Array<{
+		capture: ReturnType<typeof captureFile>;
+		file: TFile;
+		from: string;
+		to: string;
+	}>): Promise<number>;
+};
+const rollbackReloadFailures = await rollbackReloadHarness.moveReleasedNotes([
+	{
+		capture: captureFile(rollbackReloadA),
+		file: rollbackReloadA,
+		from: 'Rollback reload source/A.md',
+		to: 'Rollback reload destination/A.md',
+	},
+	{
+		capture: captureFile(rollbackReloadB),
+		file: rollbackReloadB,
+		from: 'Rollback reload source/B.md',
+		to: 'Rollback reload destination/B.md',
+	},
+]);
+equal(
+	rollbackReloadFailures,
+	2,
+	'a synchronized relationship arriving during the second move aborts the batch',
+);
+equal(
+	rollbackReloadRenameCalls,
+	2,
+	'a revision change prevents rollback from issuing a third physical rename',
+);
+equal(
+	rollbackReloadVault.getFileByPath('Rollback reload destination/A.md'),
+	rollbackReloadA,
+	'the first moved file stays at the destination newly owned by synchronized T',
+);
+equal(
+	rollbackReloadVault.getFileByPath('Rollback reload source/A.md'),
+	null,
+	'rollback does not recreate the old source after synchronized ownership changes',
+);
+equal(
+	rollbackReloadRegistry.index.getGroupById('rollback-reload-t')?.status,
+	'healthy',
+	'the synchronized T relationship remains healthy after the aborted rollback',
+);
+equal(
+	rollbackReloadRegistry.index.getGroupForFile(rollbackReloadA)?.id,
+	'rollback-reload-t',
+	'the first moved file remains resolvable through synchronized T ownership',
+);
+
 const standaloneVault = new Vault(['Fresh/Board.canvas']) as unknown as Vault;
 const standaloneV1 = standaloneVault.getFileByPath('Fresh/Board.canvas');
 check(standaloneV1, 'standalone creation fixture has an unmanaged Canvas note');
@@ -1798,6 +2592,214 @@ equal(
 	'the repair action does not masquerade as quick-create',
 );
 
+const fileMenuQuickVault = new Vault([
+	'Menu quick/Topic.md',
+]) as unknown as Vault;
+const fileMenuQuickV1 = fileMenuQuickVault.getFileByPath('Menu quick/Topic.md');
+check(fileMenuQuickV1, 'file-menu quick-create fixture has an unmanaged note');
+let fileMenuQuickPersists = 0;
+let fileMenuQuickRefreshes = 0;
+let fileMenuQuickOpenedPath: string | null = null;
+const fileMenuQuickRegistry = new VersionRegistry(
+	fileMenuQuickVault,
+	[],
+	async () => {
+		fileMenuQuickPersists += 1;
+	},
+);
+const fileMenuQuickView = new FileView();
+fileMenuQuickView.file = fileMenuQuickV1;
+const fileMenuQuickRoot = {};
+const fileMenuQuickLeaf = {
+	getRoot: () => fileMenuQuickRoot,
+	openFile: async (file: TFile) => {
+		fileMenuQuickOpenedPath = file.path;
+		fileMenuQuickView.file = file;
+	},
+	view: fileMenuQuickView,
+};
+Object.assign(fileMenuQuickView, {
+	containerEl: { contains: () => true },
+	getViewType: () => 'markdown',
+	leaf: fileMenuQuickLeaf,
+});
+const fileMenuQuickApp = makeCreationApp(fileMenuQuickVault) as unknown as {
+	workspace: {
+		getLeaf(newLeaf: boolean): typeof fileMenuQuickLeaf;
+		iterateAllLeaves(callback: (leaf: typeof fileMenuQuickLeaf) => void): void;
+		leftSplit: unknown;
+		rightSplit: unknown;
+	};
+};
+fileMenuQuickApp.workspace = {
+	getLeaf: () => fileMenuQuickLeaf,
+	iterateAllLeaves: (callback) => callback(fileMenuQuickLeaf),
+	leftSplit: {},
+	rightSplit: {},
+};
+const fileMenuQuickDecorator = new VersionViewDecorator(
+	fileMenuQuickApp as never,
+	fileMenuQuickRegistry.index,
+	fileMenuQuickRegistry,
+	() => '{{name}} (V{{version}})',
+	() => {
+		fileMenuQuickRefreshes += 1;
+	},
+	() => {
+		throw new Error('Unmanaged file-menu creation must not open management.');
+	},
+	() => undefined,
+	() => undefined,
+	() => undefined,
+	new VersionI18n('en'),
+);
+const fileMenuQuickHarness = fileMenuQuickDecorator as unknown as {
+	refresh(): void;
+};
+fileMenuQuickHarness.refresh = () => undefined;
+modalTestHarness.lastOpened = null;
+fileMenuQuickDecorator.openInitialVersionModalForFile(fileMenuQuickV1);
+const fileMenuQuickModal = modalTestHarness.lastOpened as unknown as {
+	filename: string;
+	format: 'markdown' | 'canvas' | 'excalidraw';
+	onCreate(
+		filename: string,
+		format: 'markdown' | 'canvas' | 'excalidraw',
+	): Promise<boolean>;
+	version: number;
+};
+check(
+	fileMenuQuickModal,
+	'an unmanaged note file-menu opens the shared quick-create modal',
+);
+equal(fileMenuQuickModal.version, 2, 'file-menu quick-create starts at V2');
+equal(
+	fileMenuQuickModal.filename,
+	'Topic (V2)',
+	'file-menu quick-create derives the same V2 filename as the toolbar action',
+);
+equal(
+	fileMenuQuickModal.format,
+	'markdown',
+	'file-menu quick-create follows the real source file format',
+);
+equal(
+	fileMenuQuickVault.getFileByPath('Menu quick/Topic (V2).md'),
+	null,
+	'opening or cancelling file-menu quick-create performs no file write',
+);
+equal(
+	fileMenuQuickRegistry.getRecords().length,
+	0,
+	'opening or cancelling file-menu quick-create performs no registry write',
+);
+equal(
+	await fileMenuQuickModal.onCreate('Topic (V2)', 'markdown'),
+	true,
+	'file-menu quick-create confirms through the shared creation transaction',
+);
+check(
+	fileMenuQuickVault.getFileByPath('Menu quick/Topic (V2).md'),
+	'confirmed file-menu quick-create writes exactly one V2 file',
+);
+equal(fileMenuQuickPersists, 1, 'confirmed file-menu quick-create persists once');
+equal(
+	fileMenuQuickRegistry.getRecords().length,
+	1,
+	'confirmed file-menu quick-create registers one relationship',
+);
+equal(
+	fileMenuQuickOpenedPath,
+	'Menu quick/Topic (V2).md',
+	'file-menu quick-create opens V2 only after registration',
+);
+equal(fileMenuQuickRefreshes, 1, 'successful file-menu creation refreshes once');
+
+const staleMenuVault = new Vault([
+	'Stale menu/Topic.md',
+	'Stale menu/Externally registered.md',
+]) as unknown as Vault;
+const staleMenuV1 = staleMenuVault.getFileByPath('Stale menu/Topic.md');
+const staleMenuExternalV2 = staleMenuVault.getFileByPath(
+	'Stale menu/Externally registered.md',
+);
+check(staleMenuV1, 'stale menu fixture resolves its source note');
+check(staleMenuExternalV2, 'stale menu fixture resolves its external V2');
+const staleMenuRegistry = new VersionRegistry(
+	staleMenuVault,
+	[],
+	async () => undefined,
+);
+const staleMenuView = new FileView();
+staleMenuView.file = staleMenuV1;
+const staleMenuRoot = {};
+const staleMenuLeaf = {
+	getRoot: () => staleMenuRoot,
+	openFile: async (file: TFile) => {
+		staleMenuView.file = file;
+	},
+	view: staleMenuView,
+};
+Object.assign(staleMenuView, {
+	containerEl: { contains: () => true },
+	getViewType: () => 'markdown',
+	leaf: staleMenuLeaf,
+});
+const staleMenuApp = makeCreationApp(staleMenuVault) as unknown as {
+	workspace: {
+		getLeaf(newLeaf: boolean): typeof staleMenuLeaf;
+		iterateAllLeaves(callback: (leaf: typeof staleMenuLeaf) => void): void;
+		leftSplit: unknown;
+		rightSplit: unknown;
+	};
+};
+staleMenuApp.workspace = {
+	getLeaf: () => staleMenuLeaf,
+	iterateAllLeaves: (callback) => callback(staleMenuLeaf),
+	leftSplit: {},
+	rightSplit: {},
+};
+const staleMenuDecorator = new VersionViewDecorator(
+	staleMenuApp as never,
+	staleMenuRegistry.index,
+	staleMenuRegistry,
+	() => '{{name}} (V{{version}})',
+	() => undefined,
+	() => undefined,
+	() => undefined,
+	() => undefined,
+	() => undefined,
+	new VersionI18n('en'),
+);
+const staleMenuHarness = staleMenuDecorator as unknown as { refresh(): void };
+staleMenuHarness.refresh = () => undefined;
+modalTestHarness.lastOpened = null;
+staleMenuDecorator.openInitialVersionModalForFile(staleMenuV1);
+const staleMenuModal = modalTestHarness.lastOpened as unknown as {
+	onCreate(
+		filename: string,
+		format: 'markdown' | 'canvas' | 'excalidraw',
+	): Promise<boolean>;
+};
+check(staleMenuModal, 'stale file-menu fixture first opens quick-create');
+await staleMenuRegistry.createSeries(staleMenuV1, staleMenuExternalV2);
+equal(
+	await staleMenuModal.onCreate('Topic (V2)', 'markdown'),
+	false,
+	'a file-menu modal safely stops when its source becomes registered',
+);
+equal(
+	staleMenuVault.getFileByPath('Stale menu/Topic (V2).md'),
+	null,
+	'a stale file-menu confirmation leaves no newly created file',
+);
+assert.deepEqual(
+	staleMenuRegistry.getRecords()[0]?.slots.map((slot) => slot.member?.path),
+	['Stale menu/Topic.md', 'Stale menu/Externally registered.md'],
+	'a stale file-menu confirmation preserves the externally registered relationship',
+);
+assertions += 1;
+
 const initialRollbackVault = new Vault([
 	'Rollback/Existing.md',
 ]) as unknown as Vault;
@@ -1941,6 +2943,210 @@ await assert.rejects(
 assertions += 1;
 equal(collisionPersistCalls, 0, 'a collided series move never persists');
 equal(collisionMoveA.path, 'Old/Move A.md', 'a collided native V1 move rolls back');
+
+const registeredMoveVault = new Vault([
+	'Registered move source/A.md',
+	'Registered move source/B.md',
+]) as unknown as Vault;
+const registeredMoveRecord = {
+	id: 'registered-whole-move',
+	slots: [
+		{ member: memberAt(registeredMoveVault, 'Registered move source/A.md'), version: 1 },
+		{ member: memberAt(registeredMoveVault, 'Registered move source/B.md'), version: 2 },
+	],
+};
+const registeredMoveA = registeredMoveVault.getFileByPath(
+	'Registered move source/A.md',
+);
+const registeredMoveB = registeredMoveVault.getFileByPath(
+	'Registered move source/B.md',
+);
+check(registeredMoveA, 'registry-only whole-move fixture resolves A');
+check(registeredMoveB, 'registry-only whole-move fixture resolves B');
+let registeredMoveRenames = 0;
+let registeredMoveSaves = 0;
+await assert.rejects(
+	() => executeSeriesMove(
+		registeredMoveRecord,
+		[
+			{
+				file: registeredMoveA,
+				from: 'Registered move source/A.md',
+				to: 'Registered move destination/A.md',
+			},
+			{
+				file: registeredMoveB,
+				from: 'Registered move source/B.md',
+				to: 'Registered move destination/B.md',
+			},
+		],
+		{
+			getAbstractFileByPath: (path) =>
+				registeredMoveVault.getAbstractFileByPath(path),
+			isPathRegistered: (path) => path === 'Registered move destination/A.md',
+			renameFile: async (file, from, to) => {
+				registeredMoveRenames += 1;
+				(registeredMoveVault as unknown as InstanceType<typeof Vault>)
+					.rename(from, to);
+				check(file.path === to, 'registry-only whole-move rename reaches its target');
+			},
+			saveSlots: async () => {
+				registeredMoveSaves += 1;
+			},
+		},
+	),
+	(error: unknown) =>
+		error instanceof SeriesMoveError &&
+		error.kind === 'collision' &&
+		error.collisionCount === 1,
+);
+assertions += 1;
+equal(
+	registeredMoveRenames,
+	0,
+	'a registry-only whole-series destination rejects the batch before any rename',
+);
+equal(
+	registeredMoveSaves,
+	0,
+	'a registry-only whole-series destination rejects the batch before persistence',
+);
+equal(
+	registeredMoveVault.getFileByPath('Registered move source/A.md'),
+	registeredMoveA,
+	'the registry-only whole-series collision leaves A at its source',
+);
+equal(
+	registeredMoveVault.getFileByPath('Registered move source/B.md'),
+	registeredMoveB,
+	'the registry-only whole-series collision leaves B at its source',
+);
+
+const synchronizedMoveVault = new Vault([
+	'Whole move source/A.md',
+	'Whole move source/B.md',
+	'Whole move/T2.md',
+]) as unknown as Vault;
+const synchronizedMoveInitial = {
+	id: 'whole-move-s',
+	slots: [
+		{ member: memberAt(synchronizedMoveVault, 'Whole move source/A.md'), version: 1 },
+		{ member: memberAt(synchronizedMoveVault, 'Whole move source/B.md'), version: 2 },
+	],
+};
+const synchronizedMoveRegistry = new VersionRegistry(
+	synchronizedMoveVault,
+	[synchronizedMoveInitial],
+	async () => undefined,
+);
+const synchronizedMoveExpected = synchronizedMoveRegistry.getRecordById(
+	'whole-move-s',
+);
+check(synchronizedMoveExpected, 'whole-series reload fixture captures S');
+const synchronizedMoveRevision = synchronizedMoveRegistry.getRevision();
+const synchronizedMoveA = synchronizedMoveVault.getFileByPath(
+	'Whole move source/A.md',
+);
+const synchronizedMoveB = synchronizedMoveVault.getFileByPath(
+	'Whole move source/B.md',
+);
+check(synchronizedMoveA, 'whole-series reload fixture resolves A');
+check(synchronizedMoveB, 'whole-series reload fixture resolves B');
+const synchronizedMovePlans: SeriesMovePlan[] = [
+	{
+		file: synchronizedMoveA,
+		from: 'Whole move source/A.md',
+		to: 'Whole move destination/A.md',
+	},
+	{
+		file: synchronizedMoveB,
+		from: 'Whole move source/B.md',
+		to: 'Whole move destination/B.md',
+	},
+];
+let synchronizedMoveForwardRenames = 0;
+let synchronizedMoveRollbackRenames = 0;
+await assert.rejects(
+	() => executeSeriesMove(
+		synchronizedMoveExpected,
+		synchronizedMovePlans,
+		{
+			canRollback: (plan) =>
+				synchronizedMoveRegistry.getRevision() === synchronizedMoveRevision &&
+				!synchronizedMoveRegistry.getRecords().some((record) =>
+					record.slots.some((slot) => slot.member?.path === plan.to)),
+			getAbstractFileByPath: (path) =>
+				synchronizedMoveVault.getAbstractFileByPath(path),
+			renameFile: async (file, from, to, rollback) => {
+				if (rollback) {
+					synchronizedMoveRollbackRenames += 1;
+				} else {
+					synchronizedMoveForwardRenames += 1;
+				}
+				(synchronizedMoveVault as unknown as InstanceType<typeof Vault>)
+					.rename(from, to);
+				check(file.path === to, 'whole-series move reaches its exact requested path');
+			},
+			saveSlots: async (slots) => {
+				await synchronizedMoveRegistry.reload(async () => [
+					synchronizedMoveExpected,
+					{
+						id: 'whole-move-t',
+						slots: [
+							{
+								member: memberRecordFromFile(synchronizedMoveA),
+								version: 1,
+							},
+							{
+								member: memberAt(
+									synchronizedMoveVault,
+									'Whole move/T2.md',
+								),
+								version: 2,
+							},
+						],
+					},
+				]);
+				await synchronizedMoveRegistry.saveSeriesSlots(
+					'whole-move-s',
+					slots,
+					synchronizedMoveExpected,
+					synchronizedMoveRevision,
+				);
+			},
+		},
+	),
+	(error: unknown) =>
+		error instanceof SeriesMoveError &&
+		error.kind === 'manual-repair' &&
+		error.rollbackFailures === 2,
+);
+assertions += 1;
+equal(
+	synchronizedMoveForwardRenames,
+	2,
+	'the whole-series transaction completes both forward moves before persistence',
+);
+equal(
+	synchronizedMoveRollbackRenames,
+	0,
+	'a changed revision and destination ownership prevent every stale rollback rename',
+);
+equal(
+	synchronizedMoveVault.getFileByPath('Whole move destination/A.md'),
+	synchronizedMoveA,
+	'the file claimed by synchronized T remains at its registered destination',
+);
+equal(
+	synchronizedMoveRegistry.index.getGroupById('whole-move-t')?.status,
+	'healthy',
+	'synchronized T remains healthy after the whole-series transaction aborts',
+);
+equal(
+	synchronizedMoveRegistry.index.getGroupForFile(synchronizedMoveA)?.id,
+	'whole-move-t',
+	'the claimed destination remains resolvable through synchronized T',
+);
 
 // Obsidian 1.13 may return from FileManager.renameFile before Vault updates the
 // TFile and emits `rename`. The first native V1 drag must wait for that exact
@@ -2172,6 +3378,1924 @@ equal(
 	'incomplete',
 	'ordinary binary assets are not silently treated as note versions',
 );
+
+const crossDeviceIdentity = (ctime: number): VersionMemberRecord => ({
+	identity: { ctime },
+	lastKnownName: 'Cross-device member',
+	path: 'Cross-device member.md',
+});
+check(
+	memberResolvesToFile(
+		crossDeviceIdentity(1_786_034_715_000),
+		{ stat: { ctime: 1_786_034_715_261 } },
+	),
+	'a whole-second identity resolves the observed same-second millisecond value',
+);
+check(
+	memberResolvesToFile(
+		crossDeviceIdentity(1_786_034_715_974),
+		{ stat: { ctime: 1_786_034_715_000 } },
+	),
+	'a millisecond identity resolves the observed same-second whole-second value',
+);
+equal(
+	memberResolvesToFile(
+		crossDeviceIdentity(1_786_034_715_261),
+		{ stat: { ctime: 1_786_034_715_262 } },
+	),
+	false,
+	'two millisecond-precision identities still require exact equality',
+);
+equal(
+	memberResolvesToFile(
+		crossDeviceIdentity(1_786_034_715_999),
+		{ stat: { ctime: 1_786_034_716_000 } },
+	),
+	false,
+	'a whole-second identity never matches across a creation-second boundary',
+);
+equal(
+	memberResolvesToFile(
+		crossDeviceIdentity(1_786_034_715_000),
+		{ stat: { ctime: 1_786_034_716_000 } },
+	),
+	false,
+	'whole-second identities one second apart remain different files',
+);
+equal(
+	memberResolvesToFile(
+		{ lastKnownName: 'No identity', path: 'No identity.md' },
+		{ stat: { ctime: 1_786_034_715_000 } },
+	),
+	false,
+	'a missing stored identity never matches by path alone',
+);
+equal(
+	memberResolvesToFile(
+		crossDeviceIdentity(1_786_034_715_000),
+		{ stat: { ctime: Number.NaN } },
+	),
+	false,
+	'an invalid live creation time never activates a relationship',
+);
+equal(
+	memberMatchesFile(
+		crossDeviceIdentity(0),
+		{ stat: { ctime: 261 } },
+	),
+	false,
+	'a zero identity sentinel is never treated as a coarse creation timestamp',
+);
+equal(
+	memberMatchesFile(
+		crossDeviceIdentity(1_786_034_715_000),
+		{ stat: { ctime: 1_786_034_715_261 } },
+	),
+	false,
+	'destructive identity checks never use cross-device coarse-time compatibility',
+);
+
+const crossDeviceVault = new Vault([
+	'Cross-device topic.md',
+	'Cross-device board.canvas',
+	'Cross-device sketch.excalidraw',
+]) as unknown as Vault;
+const crossDeviceCtimes = [
+	1_786_034_715_261,
+	1_786_044_691_029,
+	1_786_044_691_029,
+];
+const crossDevicePaths = [
+	'Cross-device topic.md',
+	'Cross-device board.canvas',
+	'Cross-device sketch.excalidraw',
+];
+for (const [index, path] of crossDevicePaths.entries()) {
+	const file = crossDeviceVault.getFileByPath(path);
+	check(file, `cross-device fixture resolves ${path}`);
+	file.stat.ctime = crossDeviceCtimes[index];
+}
+const crossDeviceIndex = new VersionIndex(crossDeviceVault);
+crossDeviceIndex.rebuild([{
+	id: 'cross-device-mixed-format',
+	slots: crossDevicePaths.map((path, index) => ({
+		member: {
+			identity: {
+				ctime: Math.floor(crossDeviceCtimes[index] / 1_000) * 1_000,
+			},
+			lastKnownName: path.replace(/\.[^.]+$/u, ''),
+			path,
+		},
+		version: index + 1,
+	})),
+}]);
+equal(
+	crossDeviceIndex.getGroupById('cross-device-mixed-format')?.status,
+	'healthy',
+	'a mixed-format series survives an observed whole-second precision mismatch',
+);
+const compatibleCrossDeviceGroup = crossDeviceIndex.getGroupById(
+	'cross-device-mixed-format',
+);
+check(compatibleCrossDeviceGroup, 'compatible cross-device group remains addressable');
+equal(
+	compatibleCrossDeviceGroup.identityStatus,
+	'compatible',
+	'the index exposes that the group was resolved only through precision compatibility',
+);
+equal(
+	isVersionGroupExactlyResolved(compatibleCrossDeviceGroup),
+	false,
+	'a precision-compatible group is not authorized as an exact mutable group',
+);
+const compatibleVisibilityPlan = buildFileExplorerVisibilityPlan(
+	compatibleCrossDeviceGroup,
+);
+check(
+	compatibleVisibilityPlan,
+	'a precision-compatible healthy relationship has a registry-backed visibility plan',
+);
+equal(
+	compatibleVisibilityPlan.representativePath,
+	'Cross-device topic.md',
+	'a compatible group still uses its real registered V1 as the sole representative',
+);
+assert.deepEqual(
+	compatibleVisibilityPlan.hiddenPaths,
+	[
+		'Cross-device board.canvas',
+		'Cross-device sketch.excalidraw',
+	],
+	'compatible cross-device members are hidden by registry path without authorizing mutation',
+);
+assertions += 1;
+
+let compatibleMutationPersists = 0;
+const compatibleRegistry = new VersionRegistry(
+	crossDeviceVault,
+	[{
+		id: 'cross-device-mixed-format',
+		slots: crossDevicePaths.map((path, index) => ({
+			member: {
+				identity: {
+					ctime: Math.floor(crossDeviceCtimes[index] / 1_000) * 1_000,
+				},
+				lastKnownName: path.replace(/\.[^.]+$/u, ''),
+				path,
+			},
+			version: index + 1,
+		})),
+	}],
+	async () => {
+		compatibleMutationPersists += 1;
+	},
+);
+await assert.rejects(
+	() => compatibleRegistry.dissolveSeries('cross-device-mixed-format'),
+	/changed or disappeared/u,
+);
+assertions += 1;
+const compatibleNewMember = (crossDeviceVault as unknown as InstanceType<typeof Vault>)
+	.add('Cross-device new member.md') as unknown as TFile;
+await assert.rejects(
+	() => compatibleRegistry.addMember(
+		'cross-device-mixed-format',
+		4,
+		compatibleNewMember,
+	),
+	/changed or disappeared/u,
+);
+assertions += 1;
+equal(
+	compatibleMutationPersists,
+	0,
+	'precision compatibility never authorizes the general registry mutation path',
+);
+
+function makeCompatibleAppendFixture(
+	prefix: string,
+	direction: 'live-coarse' | 'stored-coarse',
+): {
+	initialRecord: VersionSeriesRecord;
+	persisted: VersionSeriesRecord[][];
+	registry: VersionRegistry;
+	vault: Vault;
+} {
+	const paths = [
+		`${prefix}/Topic.md`,
+		`${prefix}/Board.canvas`,
+		`${prefix}/Sketch.excalidraw`,
+	];
+	const preciseCtimes = [
+		1_786_100_001_261,
+		1_786_100_002_529,
+		1_786_100_003_974,
+	];
+	const fixtureVault = new Vault(paths) as unknown as Vault;
+	const slots = paths.map((path, index) => {
+		const file = fixtureVault.getFileByPath(path);
+		check(file, `compatible append fixture resolves ${path}`);
+		const coarse = Math.floor(preciseCtimes[index] / 1_000) * 1_000;
+		file.stat.ctime = direction === 'live-coarse'
+			? coarse
+			: preciseCtimes[index];
+		return {
+			member: {
+				identity: {
+					ctime: direction === 'stored-coarse'
+						? coarse
+						: preciseCtimes[index],
+				},
+				lastKnownName: file.basename,
+				path,
+			},
+			version: index + 1,
+		};
+	});
+	const initialRecord: VersionSeriesRecord = {
+		id: `${prefix}-series`,
+		slots,
+	};
+	const persisted: VersionSeriesRecord[][] = [];
+	const registry = new VersionRegistry(
+		fixtureVault,
+		[initialRecord],
+		async (records) => {
+			persisted.push(cloneSeriesRecords(records));
+		},
+	);
+	return { initialRecord, persisted, registry, vault: fixtureVault };
+}
+
+for (const direction of ['stored-coarse', 'live-coarse'] as const) {
+	const fixture = makeCompatibleAppendFixture(`Append ${direction}`, direction);
+	const before = cloneSeriesRecords([fixture.initialRecord])[0];
+	equal(
+		fixture.registry.index.getGroupById(before.id)?.identityStatus,
+		'compatible',
+		`${direction} fixture starts as a healthy precision-compatible group`,
+	);
+	const expectation = fixture.registry.captureAppendExpectation(before.id);
+	check(expectation, `${direction} compatible group receives append-only authorization`);
+	const v4 = (fixture.vault as unknown as InstanceType<typeof Vault>)
+		.add(`Append ${direction}/New V4.md`, '');
+	v4.stat.ctime = 1_786_100_004_777;
+	await fixture.registry.appendMemberToResolvedSeries(expectation, 4, v4);
+	equal(
+		fixture.persisted.length,
+		1,
+		`${direction} compatible append persists exactly once`,
+	);
+	const after = fixture.registry.getRecordById(before.id);
+	check(after, `${direction} compatible append preserves the relationship`);
+	assert.deepEqual(
+		after.slots.slice(0, before.slots.length),
+		before.slots,
+		`${direction} compatible append preserves every old slot, order, path, name, and ctime byte-for-byte`,
+	);
+	assertions += 1;
+	assert.deepEqual(
+		after.slots.at(-1),
+		{ member: memberRecordFromFile(v4), version: 4 },
+		`${direction} compatible append adds only the exact new V4 member`,
+	);
+	assertions += 1;
+	equal(
+		fixture.registry.index.getGroupById(before.id)?.identityStatus,
+		'compatible',
+		`${direction} append never rebases the old cross-device identities`,
+	);
+	const reloaded = new VersionRegistry(
+		fixture.vault,
+		fixture.persisted[0],
+		async () => undefined,
+	);
+	assert.deepEqual(
+		reloaded.getRecordById(before.id),
+		after,
+		`${direction} append mapping survives a registry reload exactly`,
+	);
+	assertions += 1;
+	const replayCandidate = (fixture.vault as unknown as InstanceType<typeof Vault>)
+		.add(`Append ${direction}/Replay V5.md`, '');
+	await assert.rejects(
+		() => fixture.registry.appendMemberToResolvedSeries(
+			expectation,
+			5,
+			replayCandidate,
+		),
+		/authorization is no longer valid/u,
+	);
+	assertions += 1;
+	equal(
+		fixture.persisted.length,
+		1,
+		`${direction} append authorization is one-shot and cannot persist twice`,
+	);
+}
+
+class VersionToolbarElementFixture {
+	readonly attributes = new Map<string, string>();
+	readonly children: VersionToolbarElementFixture[] = [];
+	readonly classNames = new Set<string>();
+	readonly dataset: Record<string, string> = {};
+	readonly listeners = new Map<string, Array<(event: unknown) => void>>();
+	ariaLabel = '';
+	clientHeight = 0;
+	isConnected = true;
+	ownerDocument = { defaultView: null };
+	parent: VersionToolbarElementFixture | null = null;
+	scrollHeight = 0;
+	scrollTop = 0;
+	textContent = '';
+	type = '';
+
+	readonly classList = {
+		add: (...classNames: string[]) => {
+			for (const className of classNames) {
+				this.classNames.add(className);
+			}
+		},
+		contains: (className: string) => this.classNames.has(className),
+		remove: (...classNames: string[]) => {
+			for (const className of classNames) {
+				this.classNames.delete(className);
+			}
+		},
+		toggle: (className: string, force?: boolean) => {
+			const shouldHave = force ?? !this.classNames.has(className);
+			if (shouldHave) {
+				this.classNames.add(className);
+			} else {
+				this.classNames.delete(className);
+			}
+			return shouldHave;
+		},
+	};
+
+	addClass(...classNames: string[]): void {
+		this.classList.add(...classNames);
+	}
+
+	removeClass(...classNames: string[]): void {
+		this.classList.remove(...classNames);
+	}
+
+	addEventListener(type: string, listener: (event: unknown) => void): void {
+		const listeners = this.listeners.get(type) ?? [];
+		listeners.push(listener);
+		this.listeners.set(type, listeners);
+	}
+
+	click(): void {
+		for (const listener of this.listeners.get('click') ?? []) {
+			listener({
+				detail: 1,
+				preventDefault: () => undefined,
+				stopPropagation: () => undefined,
+			});
+		}
+	}
+
+	contains(element: unknown): boolean {
+		return element === this || this.children.some((child) => child.contains(element));
+	}
+
+	createDiv(options: {
+		attr?: Record<string, string>;
+		cls?: string | string[];
+		text?: string;
+	} = {}): VersionToolbarElementFixture {
+		return this.createChild(options);
+	}
+
+	createEl(
+		_tag: string,
+		options: {
+			attr?: Record<string, string>;
+			cls?: string | string[];
+			text?: string;
+		} = {},
+	): VersionToolbarElementFixture {
+		return this.createChild(options);
+	}
+
+	createSpan(options: {
+		attr?: Record<string, string>;
+		cls?: string | string[];
+		text?: string;
+	} = {}): VersionToolbarElementFixture {
+		return this.createChild(options);
+	}
+
+	empty(): void {
+		for (const child of this.children) {
+			child.isConnected = false;
+		}
+		this.children.length = 0;
+	}
+
+	hasAttribute(name: string): boolean {
+		return this.attributes.has(name);
+	}
+
+	querySelectorAll<T>(_selector: string): T[] {
+		const matches: VersionToolbarElementFixture[] = [];
+		const visit = (element: VersionToolbarElementFixture): void => {
+			if (element.classNames.has('version-tab')) {
+				matches.push(element);
+			}
+			for (const child of element.children) {
+				visit(child);
+			}
+		};
+		for (const child of this.children) {
+			visit(child);
+		}
+		return matches as T[];
+	}
+
+	remove(): void {
+		this.isConnected = false;
+		if (this.parent) {
+			const index = this.parent.children.indexOf(this);
+			if (index >= 0) {
+				this.parent.children.splice(index, 1);
+			}
+		}
+	}
+
+	removeAttribute(name: string): void {
+		this.attributes.delete(name);
+	}
+
+	setAttribute(name: string, value: string): void {
+		this.attributes.set(name, value);
+	}
+
+	private createChild(options: {
+		attr?: Record<string, string>;
+		cls?: string | string[];
+		text?: string;
+	}): VersionToolbarElementFixture {
+		const child = new VersionToolbarElementFixture();
+		child.parent = this;
+		const classNames = typeof options.cls === 'string'
+			? options.cls.split(/\s+/u).filter(Boolean)
+			: options.cls ?? [];
+		child.addClass(...classNames);
+		for (const [name, value] of Object.entries(options.attr ?? {})) {
+			child.setAttribute(name, value);
+		}
+		child.textContent = options.text ?? '';
+		this.children.push(child);
+		return child;
+	}
+}
+
+const compatibleToolbarFixture = makeCompatibleAppendFixture(
+	'Compatible toolbar refresh',
+	'stored-coarse',
+);
+const compatibleMenuGroup = compatibleToolbarFixture.registry.index.getGroupById(
+	compatibleToolbarFixture.initialRecord.id,
+);
+check(compatibleMenuGroup, 'compatible file-menu fixture resolves its healthy group');
+equal(
+	getVersionFileMenuState(
+		compatibleMenuGroup,
+		'Compatible toolbar refresh/Topic.md',
+		1,
+	).action,
+	'manage',
+	'a healthy compatible V1 is managed rather than presented as repair',
+);
+equal(
+	getVersionFileMenuState(
+		compatibleMenuGroup,
+		'Compatible toolbar refresh/Board.canvas',
+		1,
+	).action,
+	'locate',
+	'a healthy compatible non-V1 member receives the Version locator',
+);
+const exactMenuVault = new Vault([
+	'Exact menu/Topic.md',
+	'Exact menu/Member.md',
+]) as unknown as Vault;
+const exactMenuIndex = new VersionIndex(exactMenuVault);
+exactMenuIndex.rebuild([{
+	id: 'exact-menu-series',
+	slots: [
+		{ member: memberAt(exactMenuVault, 'Exact menu/Topic.md'), version: 1 },
+		{ member: memberAt(exactMenuVault, 'Exact menu/Member.md'), version: 2 },
+	],
+}]);
+const exactMenuGroup = exactMenuIndex.getGroupById('exact-menu-series');
+check(exactMenuGroup, 'exact file-menu fixture resolves its healthy group');
+equal(
+	getVersionFileMenuState(exactMenuGroup, 'Exact menu/Topic.md', 1).action,
+	'manage',
+	'a healthy exact V1 keeps the Version management action',
+);
+equal(
+	getVersionFileMenuState(exactMenuGroup, 'Exact menu/Member.md', 1).action,
+	'locate',
+	'a healthy exact non-V1 member keeps the Version locator',
+);
+const incompleteMenuVault = new Vault(['Incomplete menu/Topic.md']) as unknown as Vault;
+const incompleteMenuIndex = new VersionIndex(incompleteMenuVault);
+incompleteMenuIndex.rebuild([{
+	id: 'incomplete-menu-series',
+	slots: [
+		{ member: memberAt(incompleteMenuVault, 'Incomplete menu/Topic.md'), version: 1 },
+		{
+			member: {
+				identity: { ctime: 999_999 },
+				lastKnownName: 'Missing',
+				path: 'Incomplete menu/Missing.md',
+			},
+			version: 2,
+		},
+	],
+}]);
+const incompleteMenuV1 = incompleteMenuVault.getFileByPath('Incomplete menu/Topic.md');
+check(incompleteMenuV1, 'incomplete file-menu fixture resolves its V1 file');
+const incompleteMenuGroup = incompleteMenuIndex.getGroupForFile(incompleteMenuV1);
+check(incompleteMenuGroup, 'incomplete file-menu fixture retains its damaged group');
+equal(
+	getVersionFileMenuState(incompleteMenuGroup, incompleteMenuV1.path, 1).action,
+	'repair',
+	'an incomplete relationship still exposes repair',
+);
+equal(
+	getVersionFileMenuState(null, 'Registered but unresolved.md', 1).action,
+	'repair',
+	'a registered path with no uniquely resolved group still exposes repair',
+);
+equal(
+	getVersionFileMenuState(null, 'Unmanaged.md', 0).action,
+	'create',
+	'an entirely unmanaged note keeps quick-create',
+);
+const compatibleToolbarV1 = compatibleToolbarFixture.vault.getFileByPath(
+	'Compatible toolbar refresh/Topic.md',
+);
+check(compatibleToolbarV1, 'compatible toolbar fixture resolves its V1');
+let compatibleToolbarPlus: VersionToolbarElementFixture | null = null;
+let compatibleToolbarStartedDisabled = false;
+const compatibleToolbarContainer = new VersionToolbarElementFixture();
+const compatibleToolbarContent = new VersionToolbarElementFixture();
+compatibleToolbarContainer.children.push(compatibleToolbarContent);
+compatibleToolbarContent.parent = compatibleToolbarContainer;
+const compatibleToolbarView = new FileView();
+compatibleToolbarView.file = compatibleToolbarV1;
+const compatibleToolbarRoot = {};
+const compatibleToolbarLeaf = {
+	getRoot: () => compatibleToolbarRoot,
+	openFile: async () => undefined,
+	view: compatibleToolbarView,
+};
+Object.assign(compatibleToolbarView, {
+	addAction: (
+		icon: string,
+		_label: string,
+		callback: (event: MouseEvent) => void,
+	) => {
+		const action = new VersionToolbarElementFixture();
+		compatibleToolbarContainer.children.push(action);
+		action.parent = compatibleToolbarContainer;
+		action.addEventListener('click', callback as (event: unknown) => void);
+		if (icon === 'plus') {
+			action.addClass('is-disabled');
+			action.setAttribute('aria-disabled', 'true');
+			compatibleToolbarStartedDisabled =
+				action.classList.contains('is-disabled') &&
+				action.hasAttribute('aria-disabled');
+			compatibleToolbarPlus = action;
+		}
+		return action;
+	},
+	containerEl: compatibleToolbarContainer,
+	contentEl: compatibleToolbarContent,
+	getViewType: () => 'markdown',
+	leaf: compatibleToolbarLeaf,
+});
+const compatibleToolbarApp = makeCreationApp(
+	compatibleToolbarFixture.vault,
+) as unknown as {
+	workspace: {
+		iterateAllLeaves(callback: (leaf: typeof compatibleToolbarLeaf) => void): void;
+		leftSplit: unknown;
+		rightSplit: unknown;
+	};
+};
+compatibleToolbarApp.workspace = {
+	iterateAllLeaves: (callback) => callback(compatibleToolbarLeaf),
+	leftSplit: {},
+	rightSplit: {},
+};
+const compatibleToolbarDecorator = new VersionViewDecorator(
+	compatibleToolbarApp as never,
+	compatibleToolbarFixture.registry.index,
+	compatibleToolbarFixture.registry,
+	() => '{{name}} (V{{version}})',
+	() => undefined,
+	() => undefined,
+	() => undefined,
+	() => undefined,
+	() => undefined,
+	new VersionI18n('en'),
+);
+const resizeObserverOwner = globalThis as typeof globalThis & {
+	ResizeObserver?: typeof ResizeObserver;
+};
+const previousResizeObserver = resizeObserverOwner.ResizeObserver;
+resizeObserverOwner.ResizeObserver = class {
+	disconnect(): void {}
+	observe(): void {}
+	unobserve(): void {}
+} as unknown as typeof ResizeObserver;
+modalTestHarness.lastOpened = null;
+try {
+	compatibleToolbarDecorator.refresh();
+} finally {
+	if (previousResizeObserver) {
+		resizeObserverOwner.ResizeObserver = previousResizeObserver;
+	} else {
+		delete resizeObserverOwner.ResizeObserver;
+	}
+}
+equal(
+	compatibleToolbarStartedDisabled,
+	true,
+	'the fake native toolbar plus starts with the stale iPad disabled markers',
+);
+check(compatibleToolbarPlus, 'refresh creates the compatible toolbar plus through FileView.addAction');
+equal(
+	compatibleToolbarPlus.classList.contains('is-disabled'),
+	false,
+	'healthy compatible refresh removes the native is-disabled class',
+);
+equal(
+	compatibleToolbarPlus.hasAttribute('aria-disabled'),
+	false,
+	'healthy compatible refresh removes aria-disabled=true',
+);
+compatibleToolbarPlus.click();
+const compatibleToolbarModal = modalTestHarness.lastOpened as unknown as {
+	version: number;
+};
+check(
+	compatibleToolbarModal,
+	'the refreshed fake toolbar plus retains a live click handler that opens quick-create',
+);
+equal(
+	compatibleToolbarModal.version,
+	4,
+	'the refreshed compatible toolbar plus opens the next-version quick-create modal',
+);
+
+type CompatibleManagementSlot = {
+	assignment: null | {
+		file?: TFile;
+		format?: string;
+		kind: string;
+		member?: VersionMemberRecord;
+		name?: string;
+		registeredMember?: VersionMemberRecord | null;
+	};
+	version: number;
+};
+type CompatibleManagementDragSource =
+	| { file: TFile; kind: 'file' }
+	| { kind: 'slot'; version: number };
+type CompatibleManagementHarness = {
+	addPendingVersion(): void;
+	clearSlot(version: number): void;
+	deleteVersionSlot(version: number): void;
+	dropOnSlot(version: number, source: CompatibleManagementDragSource): void;
+	initialMemberPath: string | null;
+	managementExpectation: unknown;
+	slots: CompatibleManagementSlot[];
+	submit(): Promise<void>;
+	submitSingleRemainingVersion(v1: TFile): Promise<void>;
+};
+
+function makeCompatibleManagementApp(
+	vault: Vault,
+	counters: { creates: number; moves: number; trash: number },
+): never {
+	const mutableVault = vault as unknown as InstanceType<typeof Vault> & {
+		create(path: string, content: string): Promise<TFile>;
+	};
+	const originalCreate = mutableVault.create.bind(mutableVault);
+	mutableVault.create = async (path: string, content: string) => {
+		counters.creates += 1;
+		return originalCreate(path, content);
+	};
+	return {
+		fileManager: {
+			renameFile: async (file: TFile, path: string) => {
+				counters.moves += 1;
+				mutableVault.rename(file.path, path);
+			},
+			trashFile: async (file: TFile) => {
+				counters.trash += 1;
+				mutableVault.delete(file);
+			},
+		},
+		vault: mutableVault,
+	} as never;
+}
+
+function disableCompatibleManagementRendering(modal: VersionManagementModal): void {
+	Object.assign(modal, {
+		renderAll: () => undefined,
+		renderAllWithMotion: () => undefined,
+	});
+}
+
+const compatibleManagementFixture = makeCompatibleAppendFixture(
+	'Compatible full management',
+	'stored-coarse',
+);
+const compatibleManagementV1 = compatibleManagementFixture.vault.getFileByPath(
+	'Compatible full management/Topic.md',
+);
+const compatibleManagementV2 = compatibleManagementFixture.vault.getFileByPath(
+	'Compatible full management/Board.canvas',
+);
+const compatibleManagementV3 = compatibleManagementFixture.vault.getFileByPath(
+	'Compatible full management/Sketch.excalidraw',
+);
+check(compatibleManagementV1, 'compatible manager resolves its V1');
+check(compatibleManagementV2, 'compatible manager resolves its current V2');
+check(compatibleManagementV3, 'compatible manager resolves its V3');
+const compatibleManagementCounters = { creates: 0, moves: 0, trash: 0 };
+let compatibleManagementSaved = 0;
+const compatibleManagementModal = new VersionManagementModal(
+	makeCompatibleManagementApp(
+		compatibleManagementFixture.vault,
+		compatibleManagementCounters,
+	),
+	compatibleManagementFixture.registry,
+	compatibleManagementV2,
+	'{{name}} (V{{version}})',
+	'series-folder',
+	new VersionI18n('en'),
+	() => {
+		compatibleManagementSaved += 1;
+	},
+	compatibleManagementFixture.initialRecord.id,
+);
+disableCompatibleManagementRendering(compatibleManagementModal);
+const compatibleManagementHarness = compatibleManagementModal as unknown as
+	CompatibleManagementHarness;
+check(
+	compatibleManagementHarness.managementExpectation,
+	'a healthy precision-compatible relationship receives full management authorization',
+);
+assert.deepEqual(
+	compatibleManagementHarness.slots.map((slot) => [
+		slot.version,
+		slot.assignment?.kind,
+		slot.assignment?.file?.path,
+	]),
+	[
+		[1, 'existing', 'Compatible full management/Topic.md'],
+		[2, 'existing', 'Compatible full management/Board.canvas'],
+		[3, 'existing', 'Compatible full management/Sketch.excalidraw'],
+	],
+	'compatible management resolves every real member as an editable existing assignment',
+);
+assertions += 1;
+equal(
+	compatibleManagementHarness.initialMemberPath,
+	compatibleManagementV2.path,
+	'compatible management records the actual current member for V2 location',
+);
+const compatibleManagementFiles = [
+	compatibleManagementV1,
+	compatibleManagementV2,
+	compatibleManagementV3,
+];
+const compatibleManagementFilesBefore = await Promise.all(
+	compatibleManagementFiles.map(async (file) => ({
+		content: await compatibleManagementFixture.vault.read(file),
+		ctime: file.stat.ctime,
+		file,
+		mtime: file.stat.mtime,
+		path: file.path,
+		size: file.stat.size,
+	})),
+);
+const compatibleMembersByPath = new Map(
+	compatibleManagementFixture.initialRecord.slots.map((slot) => [
+		slot.member?.path,
+		slot.member,
+	]),
+);
+compatibleManagementHarness.dropOnSlot(3, { kind: 'slot', version: 2 });
+await compatibleManagementHarness.submit();
+const compatibleManagementAfter = compatibleManagementFixture.registry.getRecordById(
+	compatibleManagementFixture.initialRecord.id,
+);
+check(compatibleManagementAfter, 'compatible management preserves the relationship after swap');
+assert.deepEqual(
+	compatibleManagementAfter.slots,
+	[
+		{
+			member: compatibleMembersByPath.get(compatibleManagementV1.path),
+			version: 1,
+		},
+		{
+			member: compatibleMembersByPath.get(compatibleManagementV3.path),
+			version: 2,
+		},
+		{
+			member: compatibleMembersByPath.get(compatibleManagementV2.path),
+			version: 3,
+		},
+	],
+	'a compatible V2/V3 swap changes only slot-to-member mapping and preserves every old member record byte-for-byte',
+);
+assertions += 1;
+assert.deepEqual(
+	await Promise.all(compatibleManagementFiles.map(async (file) => ({
+		content: await compatibleManagementFixture.vault.read(file),
+		ctime: file.stat.ctime,
+		file,
+		mtime: file.stat.mtime,
+		path: file.path,
+		size: file.stat.size,
+	}))),
+	compatibleManagementFilesBefore,
+	'compatible mapping-only management leaves every real file object, path, stat, and content unchanged',
+);
+assertions += 1;
+equal(compatibleManagementFixture.persisted.length, 1, 'compatible swap persists once');
+equal(compatibleManagementCounters.creates, 0, 'compatible swap creates no file');
+equal(compatibleManagementCounters.moves, 0, 'compatible swap moves no file');
+equal(compatibleManagementCounters.trash, 0, 'compatible swap trashes no file');
+equal(compatibleManagementSaved, 1, 'compatible swap reports one completed save');
+const compatibleManagementReloaded = new VersionRegistry(
+	compatibleManagementFixture.vault,
+	compatibleManagementFixture.persisted[0],
+	async () => undefined,
+);
+assert.deepEqual(
+	compatibleManagementReloaded.getRecordById(compatibleManagementAfter.id),
+	compatibleManagementAfter,
+	'compatible management mapping survives a registry reload exactly',
+);
+assertions += 1;
+
+const compatibleV1SwapFixture = makeCompatibleAppendFixture(
+	'Compatible representative swap',
+	'live-coarse',
+);
+const compatibleV1SwapV1 = compatibleV1SwapFixture.vault.getFileByPath(
+	'Compatible representative swap/Topic.md',
+);
+const compatibleV1SwapV2 = compatibleV1SwapFixture.vault.getFileByPath(
+	'Compatible representative swap/Board.canvas',
+);
+check(compatibleV1SwapV1, 'compatible representative swap resolves old V1');
+check(compatibleV1SwapV2, 'compatible representative swap resolves old V2');
+const compatibleV1SwapCounters = { creates: 0, moves: 0, trash: 0 };
+const compatibleV1SwapModal = new VersionManagementModal(
+	makeCompatibleManagementApp(
+		compatibleV1SwapFixture.vault,
+		compatibleV1SwapCounters,
+	),
+	compatibleV1SwapFixture.registry,
+	compatibleV1SwapV1,
+	'{{name}} (V{{version}})',
+	'series-folder',
+	new VersionI18n('en'),
+	() => undefined,
+	compatibleV1SwapFixture.initialRecord.id,
+);
+disableCompatibleManagementRendering(compatibleV1SwapModal);
+const compatibleV1SwapHarness = compatibleV1SwapModal as unknown as
+	CompatibleManagementHarness;
+compatibleV1SwapHarness.dropOnSlot(1, { kind: 'slot', version: 2 });
+await compatibleV1SwapHarness.submit();
+equal(
+	compatibleV1SwapFixture.registry.index.getGroupById(
+		compatibleV1SwapFixture.initialRecord.id,
+	)?.versions.find((member) => member.version === 1)?.file,
+	compatibleV1SwapV2,
+	'a compatible V1/V2 swap promotes the real old V2 file to the representative entry',
+);
+assert.deepEqual(
+	compatibleV1SwapFixture.registry.getRecordById(
+		compatibleV1SwapFixture.initialRecord.id,
+	)?.slots.slice(0, 2),
+	[
+		{ member: compatibleV1SwapFixture.initialRecord.slots[1].member, version: 1 },
+		{ member: compatibleV1SwapFixture.initialRecord.slots[0].member, version: 2 },
+	],
+	'compatible V1/V2 swap preserves both original member records byte-for-byte',
+);
+assertions += 1;
+equal(compatibleV1SwapCounters.creates, 0, 'compatible representative swap creates no file');
+equal(compatibleV1SwapCounters.moves, 0, 'compatible representative swap moves no file');
+equal(compatibleV1SwapCounters.trash, 0, 'compatible representative swap trashes no file');
+
+const compatibleReassignFixture = makeCompatibleAppendFixture(
+	'Compatible original reassignment',
+	'stored-coarse',
+);
+const compatibleReassignV1 = compatibleReassignFixture.vault.getFileByPath(
+	'Compatible original reassignment/Topic.md',
+);
+const compatibleReassignV2 = compatibleReassignFixture.vault.getFileByPath(
+	'Compatible original reassignment/Board.canvas',
+);
+check(compatibleReassignV1, 'compatible reassignment resolves V1');
+check(compatibleReassignV2, 'compatible reassignment resolves V2');
+const compatibleReassignModal = new VersionManagementModal(
+	makeCompatibleManagementApp(
+		compatibleReassignFixture.vault,
+		{ creates: 0, moves: 0, trash: 0 },
+	),
+	compatibleReassignFixture.registry,
+	compatibleReassignV1,
+	'{{name}} (V{{version}})',
+	'series-folder',
+	new VersionI18n('en'),
+	() => undefined,
+	compatibleReassignFixture.initialRecord.id,
+);
+disableCompatibleManagementRendering(compatibleReassignModal);
+const compatibleReassignHarness = compatibleReassignModal as unknown as
+	CompatibleManagementHarness;
+compatibleReassignHarness.clearSlot(2);
+compatibleReassignHarness.dropOnSlot(2, {
+	file: compatibleReassignV2,
+	kind: 'file',
+});
+await compatibleReassignHarness.submit();
+assert.deepEqual(
+	compatibleReassignFixture.registry.getRecordById(
+		compatibleReassignFixture.initialRecord.id,
+	),
+	compatibleReassignFixture.initialRecord,
+	'removing and reassigning the same compatible member reuses its stored identity instead of rebasing ctime',
+);
+assertions += 1;
+
+const compatibleRemovalFixture = makeCompatibleAppendFixture(
+	'Compatible management removal',
+	'live-coarse',
+);
+const compatibleRemovalV1 = compatibleRemovalFixture.vault.getFileByPath(
+	'Compatible management removal/Topic.md',
+);
+check(compatibleRemovalV1, 'compatible removal resolves V1');
+const compatibleRemovalCounters = { creates: 0, moves: 0, trash: 0 };
+let compatibleRemovalSaved = 0;
+const compatibleRemovalModal = new VersionManagementModal(
+	makeCompatibleManagementApp(
+		compatibleRemovalFixture.vault,
+		compatibleRemovalCounters,
+	),
+	compatibleRemovalFixture.registry,
+	compatibleRemovalV1,
+	'{{name}} (V{{version}})',
+	'series-folder',
+	new VersionI18n('en'),
+	() => {
+		compatibleRemovalSaved += 1;
+	},
+	compatibleRemovalFixture.initialRecord.id,
+);
+disableCompatibleManagementRendering(compatibleRemovalModal);
+const compatibleRemovalHarness = compatibleRemovalModal as unknown as
+	CompatibleManagementHarness;
+compatibleRemovalHarness.deleteVersionSlot(2);
+await compatibleRemovalHarness.submit();
+const compatibleRemovalAfter = compatibleRemovalFixture.registry.getRecordById(
+	compatibleRemovalFixture.initialRecord.id,
+);
+check(compatibleRemovalAfter, 'compatible removal keeps the two-member relationship');
+assert.deepEqual(
+	compatibleRemovalAfter.slots,
+	compatibleRemovalFixture.initialRecord.slots.filter((slot) => slot.version !== 2),
+	'compatible removal drops only the selected mapping and preserves remaining member records byte-for-byte',
+);
+assertions += 1;
+equal(compatibleRemovalFixture.persisted.length, 1, 'compatible removal persists once');
+equal(compatibleRemovalCounters.creates, 0, 'compatible removal creates no file');
+equal(compatibleRemovalCounters.moves, 0, 'same-folder compatible removal moves no file');
+equal(compatibleRemovalCounters.trash, 0, 'compatible removal never trashes the released file');
+equal(compatibleRemovalSaved, 1, 'compatible removal reports one completed save');
+check(
+	compatibleRemovalFixture.vault.getFileByPath(
+		'Compatible management removal/Board.canvas',
+	),
+	'compatible removal leaves the released file readable at its original path',
+);
+
+const compatibleReleaseMoveFixture = makeCompatibleAppendFixture(
+	'Compatible release move',
+	'live-coarse',
+);
+const compatibleReleaseMoveV1 = compatibleReleaseMoveFixture.vault.getFileByPath(
+	'Compatible release move/Topic.md',
+);
+const compatibleReleaseMoveV2 = compatibleReleaseMoveFixture.vault.getFileByPath(
+	'Compatible release move/Board.canvas',
+);
+check(compatibleReleaseMoveV1, 'compatible release move resolves V1');
+check(compatibleReleaseMoveV2, 'compatible release move resolves V2');
+const compatibleReleaseMoveCounters = { creates: 0, moves: 0, trash: 0 };
+const compatibleReleaseMoveModal = new VersionManagementModal(
+	makeCompatibleManagementApp(
+		compatibleReleaseMoveFixture.vault,
+		compatibleReleaseMoveCounters,
+	),
+	compatibleReleaseMoveFixture.registry,
+	compatibleReleaseMoveV1,
+	'{{name}} (V{{version}})',
+	'vault-root',
+	new VersionI18n('en'),
+	() => undefined,
+	compatibleReleaseMoveFixture.initialRecord.id,
+);
+disableCompatibleManagementRendering(compatibleReleaseMoveModal);
+const compatibleReleaseMoveHarness = compatibleReleaseMoveModal as unknown as
+	CompatibleManagementHarness;
+compatibleReleaseMoveHarness.deleteVersionSlot(2);
+await compatibleReleaseMoveHarness.submit();
+equal(
+	compatibleReleaseMoveCounters.moves,
+	1,
+	'a compatible removed member may move only through the guarded release path',
+);
+equal(
+	compatibleReleaseMoveFixture.vault.getFileByPath('Board.canvas'),
+	compatibleReleaseMoveV2,
+	'the captured compatible released file reaches the configured vault root',
+);
+equal(
+	compatibleReleaseMoveFixture.vault.getFileByPath(
+		'Compatible release move/Board.canvas',
+	),
+	null,
+	'a successful guarded release move clears only its original path',
+);
+assert.deepEqual(
+	compatibleReleaseMoveFixture.registry.getRecordById(
+		compatibleReleaseMoveFixture.initialRecord.id,
+	)?.slots,
+	compatibleReleaseMoveFixture.initialRecord.slots.filter(
+		(slot) => slot.version !== 2,
+	),
+	'compatible release movement does not rewrite surviving identities',
+);
+assertions += 1;
+
+const compatibleChangedReleaseFixture = makeCompatibleAppendFixture(
+	'Compatible changed release',
+	'stored-coarse',
+);
+const compatibleChangedReleaseV1 = compatibleChangedReleaseFixture.vault.getFileByPath(
+	'Compatible changed release/Topic.md',
+);
+const compatibleChangedReleaseV2 = compatibleChangedReleaseFixture.vault.getFileByPath(
+	'Compatible changed release/Board.canvas',
+);
+check(compatibleChangedReleaseV1, 'changed compatible release resolves V1');
+check(compatibleChangedReleaseV2, 'changed compatible release resolves V2');
+const compatibleChangedReleaseCounters = { creates: 0, moves: 0, trash: 0 };
+const compatibleChangedReleaseModal = new VersionManagementModal(
+	makeCompatibleManagementApp(
+		compatibleChangedReleaseFixture.vault,
+		compatibleChangedReleaseCounters,
+	),
+	compatibleChangedReleaseFixture.registry,
+	compatibleChangedReleaseV1,
+	'{{name}} (V{{version}})',
+	'vault-root',
+	new VersionI18n('en'),
+	() => undefined,
+	compatibleChangedReleaseFixture.initialRecord.id,
+);
+disableCompatibleManagementRendering(compatibleChangedReleaseModal);
+const compatibleChangedReleaseHarness = compatibleChangedReleaseModal as unknown as
+	CompatibleManagementHarness;
+compatibleChangedReleaseHarness.deleteVersionSlot(2);
+(compatibleChangedReleaseFixture.vault as unknown as InstanceType<typeof Vault>)
+	.modify(compatibleChangedReleaseV2, 'user edit after staging removal');
+await compatibleChangedReleaseHarness.submit();
+equal(
+	compatibleChangedReleaseCounters.moves,
+	0,
+	'a released file changed after staging is never moved from a stale capture',
+);
+equal(
+	compatibleChangedReleaseFixture.vault.getFileByPath(
+		'Compatible changed release/Board.canvas',
+	),
+	compatibleChangedReleaseV2,
+	'the changed released file remains readable at the user-visible source path',
+);
+equal(
+	await compatibleChangedReleaseFixture.vault.read(compatibleChangedReleaseV2),
+	'user edit after staging removal',
+	'skipping the stale release move preserves the user edit',
+);
+equal(
+	compatibleChangedReleaseFixture.persisted.length,
+	1,
+	'a changed released file may still be safely removed from the registry mapping',
+);
+
+const compatibleDissolveFixture = makeCompatibleAppendFixture(
+	'Compatible management dissolve',
+	'live-coarse',
+);
+const compatibleDissolveV1 = compatibleDissolveFixture.vault.getFileByPath(
+	'Compatible management dissolve/Topic.md',
+);
+check(compatibleDissolveV1, 'compatible dissolve resolves V1');
+const compatibleDissolveFiles = compatibleDissolveFixture.initialRecord.slots.map(
+	(slot) => {
+		check(slot.member, `compatible dissolve resolves V${slot.version} member`);
+		const file = compatibleDissolveFixture.vault.getFileByPath(slot.member.path);
+		check(file, `compatible dissolve resolves V${slot.version} file`);
+		return file;
+	},
+);
+const compatibleDissolveCounters = { creates: 0, moves: 0, trash: 0 };
+const compatibleDissolveModal = new VersionManagementModal(
+	makeCompatibleManagementApp(
+		compatibleDissolveFixture.vault,
+		compatibleDissolveCounters,
+	),
+	compatibleDissolveFixture.registry,
+	compatibleDissolveV1,
+	'{{name}} (V{{version}})',
+	'series-folder',
+	new VersionI18n('en'),
+	() => undefined,
+	compatibleDissolveFixture.initialRecord.id,
+);
+disableCompatibleManagementRendering(compatibleDissolveModal);
+const compatibleDissolveHarness = compatibleDissolveModal as unknown as
+	CompatibleManagementHarness;
+compatibleDissolveHarness.deleteVersionSlot(3);
+compatibleDissolveHarness.deleteVersionSlot(2);
+await compatibleDissolveHarness.submitSingleRemainingVersion(compatibleDissolveV1);
+equal(
+	compatibleDissolveFixture.registry.getRecordById(
+		compatibleDissolveFixture.initialRecord.id,
+	),
+	null,
+	'compatible management may explicitly stop managing its final V1 mapping',
+);
+equal(compatibleDissolveFixture.persisted.length, 1, 'compatible dissolve persists once');
+equal(compatibleDissolveCounters.creates, 0, 'compatible dissolve creates no file');
+equal(compatibleDissolveCounters.moves, 0, 'same-folder compatible dissolve moves no file');
+equal(compatibleDissolveCounters.trash, 0, 'compatible dissolve never trashes a file');
+for (const file of compatibleDissolveFiles) {
+	equal(
+		compatibleDissolveFixture.vault.getFileByPath(file.path),
+		file,
+		`compatible dissolve leaves ${file.path} as the same readable file`,
+	);
+}
+
+const compatibleStaleDissolveFixture = makeCompatibleAppendFixture(
+	'Compatible stale dissolve blocked',
+	'stored-coarse',
+);
+const compatibleStaleDissolveExpectation =
+	compatibleStaleDissolveFixture.registry.captureManagementExpectation(
+		compatibleStaleDissolveFixture.initialRecord.id,
+	);
+check(
+	compatibleStaleDissolveExpectation,
+	'compatible stale dissolve receives management authorization',
+);
+const compatibleStaleDissolveV2 = compatibleStaleDissolveFixture.vault.getFileByPath(
+	'Compatible stale dissolve blocked/Board.canvas',
+);
+check(compatibleStaleDissolveV2, 'compatible stale dissolve resolves V2');
+compatibleStaleDissolveV2.stat.ctime += 12_345;
+await assert.rejects(
+	() => compatibleStaleDissolveFixture.registry.dissolveResolvedSeriesManagement(
+		compatibleStaleDissolveExpectation,
+	),
+	/changed or disappeared/u,
+	'a compatible dissolve revalidates every captured member before forgetting the mapping',
+);
+assertions += 1;
+equal(
+	compatibleStaleDissolveFixture.persisted.length,
+	0,
+	'a stale compatible dissolve performs no persistence',
+);
+assert.deepEqual(
+	compatibleStaleDissolveFixture.registry.getRecordById(
+		compatibleStaleDissolveFixture.initialRecord.id,
+	),
+	compatibleStaleDissolveFixture.initialRecord,
+	'a stale compatible dissolve preserves the registry exactly',
+);
+assertions += 1;
+
+const compatibleCreationFixture = makeCompatibleAppendFixture(
+	'Compatible management creation',
+	'stored-coarse',
+);
+const compatibleCreationV2 = compatibleCreationFixture.vault.getFileByPath(
+	'Compatible management creation/Board.canvas',
+);
+check(compatibleCreationV2, 'compatible creation resolves current Canvas V2');
+const compatibleCreationCounters = { creates: 0, moves: 0, trash: 0 };
+const compatibleCreationModal = new VersionManagementModal(
+	makeCompatibleManagementApp(
+		compatibleCreationFixture.vault,
+		compatibleCreationCounters,
+	),
+	compatibleCreationFixture.registry,
+	compatibleCreationV2,
+	'{{name}} (V{{version}})',
+	'series-folder',
+	new VersionI18n('en'),
+	() => undefined,
+	compatibleCreationFixture.initialRecord.id,
+);
+disableCompatibleManagementRendering(compatibleCreationModal);
+const compatibleCreationHarness = compatibleCreationModal as unknown as
+	CompatibleManagementHarness;
+compatibleCreationHarness.addPendingVersion();
+equal(
+	compatibleCreationHarness.slots.find((slot) => slot.version === 4)?.assignment?.kind,
+	'new',
+	'compatible management keeps the normal staged-new-version entrypoint enabled',
+);
+await compatibleCreationHarness.submit();
+const compatibleCreationAfter = compatibleCreationFixture.registry.getRecordById(
+	compatibleCreationFixture.initialRecord.id,
+);
+check(compatibleCreationAfter, 'compatible creation preserves the relationship');
+assert.deepEqual(
+	compatibleCreationAfter.slots.slice(0, 3),
+	compatibleCreationFixture.initialRecord.slots,
+	'compatible creation preserves all old members byte-for-byte',
+);
+assertions += 1;
+equal(compatibleCreationAfter.slots[3]?.version, 4, 'compatible management registers V4');
+equal(
+	compatibleCreationAfter.slots[3]?.member?.path,
+	'Compatible management creation/Topic (V4).canvas',
+	'compatible management follows the current Canvas format for staged V4',
+);
+equal(compatibleCreationCounters.creates, 1, 'compatible management creates exactly one staged file');
+equal(compatibleCreationCounters.moves, 0, 'compatible creation moves no existing file');
+equal(compatibleCreationCounters.trash, 0, 'successful compatible creation trashes no file');
+
+const compatibleIdentityRewriteFixture = makeCompatibleAppendFixture(
+	'Compatible identity rewrite blocked',
+	'stored-coarse',
+);
+const compatibleIdentityExpectation =
+	compatibleIdentityRewriteFixture.registry.captureManagementExpectation(
+		compatibleIdentityRewriteFixture.initialRecord.id,
+	);
+check(compatibleIdentityExpectation, 'compatible identity test receives management authorization');
+const rewrittenCompatibleAssignments = compatibleIdentityRewriteFixture.initialRecord.slots.map(
+	(slot) => {
+		check(slot.member, `compatible identity test resolves V${slot.version} member`);
+		const file = compatibleIdentityRewriteFixture.vault.getFileByPath(slot.member.path);
+		check(file, `compatible identity test resolves V${slot.version} file`);
+		return {
+			file,
+			member: memberRecordFromFile(file),
+			version: slot.version,
+		};
+	},
+);
+await assert.rejects(
+	() => compatibleIdentityRewriteFixture.registry.saveResolvedSeriesManagement(
+		compatibleIdentityExpectation,
+		rewrittenCompatibleAssignments,
+	),
+	/original Version identity/u,
+	'a compatible save cannot silently replace stored ctimes with this device ctimes',
+);
+assertions += 1;
+equal(
+	compatibleIdentityRewriteFixture.persisted.length,
+	0,
+	'blocked compatible identity rewriting performs no persistence',
+);
+assert.deepEqual(
+	compatibleIdentityRewriteFixture.registry.getRecordById(
+		compatibleIdentityRewriteFixture.initialRecord.id,
+	),
+	compatibleIdentityRewriteFixture.initialRecord,
+	'blocked compatible identity rewriting preserves the registry exactly',
+);
+assertions += 1;
+
+const compatibleReplacementFixture = makeCompatibleAppendFixture(
+	'Compatible replacement blocked',
+	'stored-coarse',
+);
+const compatibleReplacementExpectation =
+	compatibleReplacementFixture.registry.captureManagementExpectation(
+		compatibleReplacementFixture.initialRecord.id,
+	);
+check(compatibleReplacementExpectation, 'replacement test receives management authorization');
+const compatibleReplacementPath = 'Compatible replacement blocked/Board.canvas';
+const compatibleReplacedFile = compatibleReplacementFixture.vault.getFileByPath(
+	compatibleReplacementPath,
+);
+check(compatibleReplacedFile, 'replacement test resolves the original V2');
+const compatibleReplacementVault = compatibleReplacementFixture.vault as unknown as
+	InstanceType<typeof Vault>;
+const compatibleReplacementCtime = compatibleReplacedFile.stat.ctime;
+compatibleReplacementVault.delete(compatibleReplacedFile);
+const compatibleReplacement = compatibleReplacementVault.add(compatibleReplacementPath);
+compatibleReplacement.stat.ctime = compatibleReplacementCtime;
+const compatibleReplacementAssignments = compatibleReplacementFixture.initialRecord.slots.map(
+	(slot) => {
+		check(slot.member, `replacement test resolves V${slot.version} member`);
+		const file = compatibleReplacementFixture.vault.getFileByPath(slot.member.path);
+		check(file, `replacement test resolves live V${slot.version}`);
+		return { file, member: { ...slot.member }, version: slot.version };
+	},
+);
+await assert.rejects(
+	() => compatibleReplacementFixture.registry.saveResolvedSeriesManagement(
+		compatibleReplacementExpectation,
+		compatibleReplacementAssignments,
+	),
+	/not the originally registered Version file/u,
+	'a same-path replacement with the same exposed ctime cannot inherit management authorization',
+);
+assertions += 1;
+equal(
+	compatibleReplacementFixture.persisted.length,
+	0,
+	'blocked same-path replacement performs no persistence',
+);
+
+const staleCompatiblePaths = [
+	'Stale compatible modal/Topic.md',
+	'Stale compatible modal/Board.canvas',
+	'Stale compatible modal/Sketch.excalidraw',
+];
+const staleCompatibleVault = new Vault(staleCompatiblePaths) as unknown as Vault;
+for (const [index, path] of staleCompatiblePaths.entries()) {
+	const file = staleCompatibleVault.getFileByPath(path);
+	check(file, `stale compatible fixture resolves ${path}`);
+	file.stat.ctime = 1_786_200_001_261 + index * 1_000;
+}
+const staleCompatibleRecord: VersionSeriesRecord = {
+	id: 'stale-compatible-modal-series',
+	slots: staleCompatiblePaths.map((path, index) => ({
+		member: memberAt(staleCompatibleVault, path),
+		version: index + 1,
+	})),
+};
+const staleCompatibleRegistry = new VersionRegistry(
+	staleCompatibleVault,
+	[staleCompatibleRecord],
+	async () => undefined,
+);
+equal(
+	staleCompatibleRegistry.index.getGroupById(staleCompatibleRecord.id)?.identityStatus,
+	'exact',
+	'stale-cache regression begins with an exact cached index',
+);
+check(
+	staleCompatibleRegistry.resolveExactlyMatchedGroup(staleCompatibleRecord.id),
+	'a fresh mutation authorization accepts the initial exact relationship',
+);
+for (const path of staleCompatiblePaths) {
+	const file = staleCompatibleVault.getFileByPath(path);
+	check(file, `stale compatible fixture re-resolves ${path}`);
+	file.stat.ctime = Math.floor(file.stat.ctime / 1_000) * 1_000;
+}
+equal(
+	staleCompatibleRegistry.index.getGroupById(staleCompatibleRecord.id)?.identityStatus,
+	'exact',
+	'TFile ctime precision can change before the cached index receives a Vault event',
+);
+equal(
+	staleCompatibleRegistry.resolveExactlyMatchedGroup(staleCompatibleRecord.id),
+	null,
+	'a mutation authorization rebuilds and rejects in-place compatible ctime drift without a Vault event',
+);
+const staleCompatibleCurrent = staleCompatibleVault.getFileByPath(staleCompatiblePaths[1]);
+check(staleCompatibleCurrent, 'stale-cache regression resolves current V2');
+const staleCompatibleModal = new VersionManagementModal(
+	makeCompatibleManagementApp(
+		staleCompatibleVault,
+		{ creates: 0, moves: 0, trash: 0 },
+	),
+	staleCompatibleRegistry,
+	staleCompatibleCurrent,
+	'{{name}} (V{{version}})',
+	'series-folder',
+	new VersionI18n('en'),
+	() => undefined,
+	staleCompatibleRecord.id,
+);
+const staleCompatibleHarness = staleCompatibleModal as unknown as
+	CompatibleManagementHarness;
+check(
+	staleCompatibleHarness.managementExpectation,
+	'management rebuilds the stale index and captures a compatible authorization',
+);
+assert.deepEqual(
+	staleCompatibleHarness.slots.map((slot) => slot.assignment?.kind),
+	['existing', 'existing', 'existing'],
+	'a stale exact cache followed by compatible live ctimes never renders every path as missing',
+);
+assertions += 1;
+
+const identityConflictPaths = [
+	'Identity conflict modal/Topic.md',
+	'Identity conflict modal/Board.canvas',
+	'Identity conflict modal/Sketch.excalidraw',
+];
+const identityConflictVault = new Vault(identityConflictPaths) as unknown as Vault;
+for (const [index, path] of identityConflictPaths.entries()) {
+	const file = identityConflictVault.getFileByPath(path);
+	check(file, `identity-conflict fixture resolves ${path}`);
+	file.stat.ctime = 1_786_300_001_261 + index * 1_000;
+}
+const identityConflictRecord: VersionSeriesRecord = {
+	id: 'identity-conflict-modal-series',
+	slots: identityConflictPaths.map((path, index) => ({
+		member: memberAt(identityConflictVault, path),
+		version: index + 1,
+	})),
+};
+let identityConflictPersists = 0;
+const identityConflictRegistry = new VersionRegistry(
+	identityConflictVault,
+	[identityConflictRecord],
+	async () => {
+		identityConflictPersists += 1;
+	},
+);
+const identityConflictV2 = identityConflictVault.getFileByPath(identityConflictPaths[1]);
+const identityConflictV3 = identityConflictVault.getFileByPath(identityConflictPaths[2]);
+check(identityConflictV2, 'identity-conflict fixture resolves V2');
+check(identityConflictV3, 'identity-conflict fixture resolves V3');
+identityConflictV2.stat.ctime += 1_000;
+identityConflictV3.stat.ctime = Math.floor(identityConflictV3.stat.ctime / 1_000) * 1_000;
+equal(
+	identityConflictRegistry.resolveExactlyMatchedGroup(identityConflictRecord.id),
+	null,
+	'a mutation authorization rebuilds and rejects an in-place identity conflict without a Vault event',
+);
+const identityConflictV1 = identityConflictVault.getFileByPath(identityConflictPaths[0]);
+check(identityConflictV1, 'identity-conflict fixture resolves V1');
+let identityConflictSaved = 0;
+const identityConflictModal = new VersionManagementModal(
+	makeCompatibleManagementApp(
+		identityConflictVault,
+		{ creates: 0, moves: 0, trash: 0 },
+	),
+	identityConflictRegistry,
+	identityConflictV1,
+	'{{name}} (V{{version}})',
+	'series-folder',
+	new VersionI18n('en'),
+	() => {
+		identityConflictSaved += 1;
+	},
+	identityConflictRecord.id,
+);
+disableCompatibleManagementRendering(identityConflictModal);
+const identityConflictHarness = identityConflictModal as unknown as
+	CompatibleManagementHarness;
+equal(
+	identityConflictHarness.managementExpectation,
+	null,
+	'a genuine different-second identity conflict receives no compatible authorization',
+);
+assert.deepEqual(
+	identityConflictHarness.slots.map((slot) => [
+		slot.assignment?.kind,
+		slot.assignment?.file?.path,
+	]),
+	[
+		['existing', identityConflictPaths[0]],
+		['identity-conflict', identityConflictPaths[1]],
+		['existing', identityConflictPaths[2]],
+	],
+	'a path that exists with a conflicting identity is labeled conflict, while other compatible members remain existing',
+);
+assertions += 1;
+await identityConflictHarness.submit();
+equal(identityConflictPersists, 0, 'unchanged identity conflict cannot persist silently');
+equal(identityConflictSaved, 0, 'unchanged identity conflict cannot report a successful save');
+assert.deepEqual(
+	identityConflictRegistry.getRecordById(identityConflictRecord.id),
+	identityConflictRecord,
+	'failed identity-conflict submit preserves the registry exactly',
+);
+assertions += 1;
+
+const compatiblePlusFixture = makeCompatibleAppendFixture(
+	'Compatible plus flow',
+	'stored-coarse',
+);
+let compatiblePlusOpenedPath: string | null = null;
+let compatiblePlusRefreshes = 0;
+const compatiblePlusDecorator = new VersionViewDecorator(
+	makeCreationApp(compatiblePlusFixture.vault),
+	compatiblePlusFixture.registry.index,
+	compatiblePlusFixture.registry,
+	() => '{{name}} (V{{version}})',
+	() => {
+		compatiblePlusRefreshes += 1;
+	},
+	() => {
+		throw new Error('The compatible plus action must not open Version management.');
+	},
+	() => undefined,
+	() => undefined,
+	() => undefined,
+	new VersionI18n('en'),
+);
+const compatiblePlusHarness = compatiblePlusDecorator as unknown as {
+	handleAddVersion(view: FileView, event: MouseEvent): void;
+	refresh(): void;
+};
+compatiblePlusHarness.refresh = () => undefined;
+const compatiblePlusV1 = compatiblePlusFixture.vault.getFileByPath(
+	'Compatible plus flow/Topic.md',
+);
+check(compatiblePlusV1, 'compatible plus fixture resolves its current V1');
+const compatiblePlusView = {
+	file: compatiblePlusV1,
+	leaf: {
+		openFile: async (file: TFile) => {
+			compatiblePlusOpenedPath = file.path;
+		},
+	},
+} as unknown as FileView;
+modalTestHarness.lastOpened = null;
+compatiblePlusHarness.handleAddVersion(
+	compatiblePlusView,
+	{} as MouseEvent,
+);
+const compatiblePlusModal = modalTestHarness.lastOpened as unknown as {
+	filename: string;
+	format: 'markdown' | 'canvas' | 'excalidraw';
+	onCreate(
+		filename: string,
+		format: 'markdown' | 'canvas' | 'excalidraw',
+	): Promise<boolean>;
+	version: number;
+};
+check(
+	compatiblePlusModal,
+	'a healthy precision-compatible note opens quick-create instead of rejecting the plus action',
+);
+equal(compatiblePlusModal.version, 4, 'compatible plus offers the next maximum version');
+equal(
+	compatiblePlusModal.format,
+	'markdown',
+	'compatible plus follows the current real member format',
+);
+equal(
+	await compatiblePlusModal.onCreate('New V4', 'markdown'),
+	true,
+	'compatible plus completes through the append-only transaction',
+);
+equal(
+	compatiblePlusFixture.persisted.length,
+	1,
+	'compatible plus persists one relationship update',
+);
+equal(
+	compatiblePlusOpenedPath,
+	'Compatible plus flow/New V4.md',
+	'compatible plus opens the new version only after registration',
+);
+equal(
+	compatiblePlusRefreshes,
+	1,
+	'compatible plus refreshes file UI after the committed append',
+);
+
+const compatiblePlusRollbackSeed = makeCompatibleAppendFixture(
+	'Compatible plus rollback',
+	'live-coarse',
+);
+const compatiblePlusRollbackRegistry = new VersionRegistry(
+	compatiblePlusRollbackSeed.vault,
+	[compatiblePlusRollbackSeed.initialRecord],
+	async () => {
+		throw new Error('compatible append persistence failed');
+	},
+);
+const compatiblePlusRollbackDecorator = new VersionViewDecorator(
+	makeCreationApp(compatiblePlusRollbackSeed.vault),
+	compatiblePlusRollbackRegistry.index,
+	compatiblePlusRollbackRegistry,
+	() => '{{name}} (V{{version}})',
+	() => undefined,
+	() => undefined,
+	() => undefined,
+	() => undefined,
+	() => undefined,
+	new VersionI18n('en'),
+);
+const compatiblePlusRollbackHarness = compatiblePlusRollbackDecorator as unknown as {
+	handleAddVersion(view: FileView, event: MouseEvent): void;
+	refresh(): void;
+};
+compatiblePlusRollbackHarness.refresh = () => undefined;
+const compatiblePlusRollbackV1 = compatiblePlusRollbackSeed.vault.getFileByPath(
+	'Compatible plus rollback/Topic.md',
+);
+check(compatiblePlusRollbackV1, 'compatible rollback fixture resolves V1');
+modalTestHarness.lastOpened = null;
+compatiblePlusRollbackHarness.handleAddVersion(
+	{
+		file: compatiblePlusRollbackV1,
+		leaf: { openFile: async () => undefined },
+	} as unknown as FileView,
+	{} as MouseEvent,
+);
+const compatiblePlusRollbackModal = modalTestHarness.lastOpened as unknown as {
+	onCreate(filename: string, format: 'markdown'): Promise<boolean>;
+};
+check(compatiblePlusRollbackModal, 'compatible rollback fixture opens quick-create');
+equal(
+	await compatiblePlusRollbackModal.onCreate('Failed V4', 'markdown'),
+	false,
+	'compatible plus reports a failed registry commit',
+);
+equal(
+	compatiblePlusRollbackSeed.vault.getFileByPath(
+		'Compatible plus rollback/Failed V4.md',
+	),
+	null,
+	'a failed compatible append rolls back only its unchanged new file',
+);
+assert.deepEqual(
+	compatiblePlusRollbackRegistry.getRecordById(
+		compatiblePlusRollbackSeed.initialRecord.id,
+	),
+	compatiblePlusRollbackSeed.initialRecord,
+	'a failed compatible append preserves every pre-existing relationship field',
+);
+assertions += 1;
+
+const appendRevisionFixture = makeCompatibleAppendFixture(
+	'Append revision race',
+	'stored-coarse',
+);
+const appendRevisionExpectation = appendRevisionFixture.registry
+	.captureAppendExpectation(appendRevisionFixture.initialRecord.id);
+check(appendRevisionExpectation, 'append revision race captures authorization');
+const revisionOtherV1 = (appendRevisionFixture.vault as unknown as InstanceType<typeof Vault>)
+	.add('Append revision race/Other V1.md');
+const revisionOtherV2 = (appendRevisionFixture.vault as unknown as InstanceType<typeof Vault>)
+	.add('Append revision race/Other V2.md');
+await appendRevisionFixture.registry.reload(async () => [
+	...appendRevisionFixture.registry.getRecords(),
+	{
+		id: 'append-revision-other-series',
+		slots: [
+			{ member: memberRecordFromFile(revisionOtherV1), version: 1 },
+			{ member: memberRecordFromFile(revisionOtherV2), version: 2 },
+		],
+	},
+]);
+const appendRevisionCandidate = (appendRevisionFixture.vault as unknown as InstanceType<typeof Vault>)
+	.add('Append revision race/New V4.md');
+await assert.rejects(
+	() => appendRevisionFixture.registry.appendMemberToResolvedSeries(
+		appendRevisionExpectation,
+		4,
+		appendRevisionCandidate,
+	),
+	/registry changed/u,
+);
+assertions += 1;
+equal(
+	appendRevisionFixture.persisted.length,
+	0,
+	'a registry revision change rejects append without writing either relationship',
+);
+
+const appendRenameFixture = makeCompatibleAppendFixture(
+	'Append candidate rename',
+	'stored-coarse',
+);
+const appendRenameExpectation = appendRenameFixture.registry
+	.captureAppendExpectation(appendRenameFixture.initialRecord.id);
+check(appendRenameExpectation, 'candidate rename fixture captures authorization');
+const appendRenameCandidate = (appendRenameFixture.vault as unknown as InstanceType<typeof Vault>)
+	.add('Append candidate rename/New V4.md');
+const appendAfterRename = appendRenameFixture.registry.appendMemberToResolvedSeries(
+	appendRenameExpectation,
+	4,
+	appendRenameCandidate,
+);
+(appendRenameFixture.vault as unknown as InstanceType<typeof Vault>).rename(
+	'Append candidate rename/New V4.md',
+	'Append candidate rename/Renamed before commit.md',
+);
+await assert.rejects(() => appendAfterRename, /no longer the same supported file/u);
+assertions += 1;
+equal(
+	appendRenameFixture.persisted.length,
+	0,
+	'a queued candidate rename is rejected before registry persistence',
+);
+assert.deepEqual(
+	appendRenameFixture.registry.getRecordById(appendRenameFixture.initialRecord.id),
+	appendRenameFixture.initialRecord,
+	'a queued candidate rename leaves every old slot untouched',
+);
+assertions += 1;
+
+const appendCandidateReplacementFixture = makeCompatibleAppendFixture(
+	'Append candidate replacement',
+	'live-coarse',
+);
+const appendCandidateReplacementExpectation = appendCandidateReplacementFixture.registry
+	.captureAppendExpectation(appendCandidateReplacementFixture.initialRecord.id);
+check(
+	appendCandidateReplacementExpectation,
+	'candidate replacement fixture captures authorization',
+);
+const appendCandidatePath = 'Append candidate replacement/New V4.md';
+const replacedAppendCandidate = (
+	appendCandidateReplacementFixture.vault as unknown as InstanceType<typeof Vault>
+).add(appendCandidatePath);
+const replacedAppendCandidateStats = { ...replacedAppendCandidate.stat };
+const appendAfterCandidateReplacement = appendCandidateReplacementFixture.registry
+	.appendMemberToResolvedSeries(
+		appendCandidateReplacementExpectation,
+		4,
+		replacedAppendCandidate,
+	);
+(
+	appendCandidateReplacementFixture.vault as unknown as InstanceType<typeof Vault>
+).delete(replacedAppendCandidate);
+const substituteAppendCandidate = (
+	appendCandidateReplacementFixture.vault as unknown as InstanceType<typeof Vault>
+).add(appendCandidatePath);
+Object.assign(substituteAppendCandidate.stat, replacedAppendCandidateStats);
+await assert.rejects(
+	() => appendAfterCandidateReplacement,
+	/no longer the same supported file/u,
+);
+assertions += 1;
+equal(
+	appendCandidateReplacementFixture.persisted.length,
+	0,
+	'a same-path same-stat candidate replacement is rejected by TFile identity',
+);
+
+const appendOldReplacementFixture = makeCompatibleAppendFixture(
+	'Append old replacement',
+	'stored-coarse',
+);
+const appendOldReplacementExpectation = appendOldReplacementFixture.registry
+	.captureAppendExpectation(appendOldReplacementFixture.initialRecord.id);
+check(appendOldReplacementExpectation, 'old member replacement fixture captures authorization');
+const oldMemberPath = 'Append old replacement/Board.canvas';
+const replacedOldMember = appendOldReplacementFixture.vault.getFileByPath(oldMemberPath);
+check(replacedOldMember, 'old member replacement fixture resolves V2');
+const replacedOldMemberStats = { ...replacedOldMember.stat };
+(appendOldReplacementFixture.vault as unknown as InstanceType<typeof Vault>)
+	.delete(replacedOldMember);
+const substituteOldMember = (appendOldReplacementFixture.vault as unknown as InstanceType<typeof Vault>)
+	.add(oldMemberPath);
+Object.assign(substituteOldMember.stat, replacedOldMemberStats);
+const appendOldReplacementCandidate = (
+	appendOldReplacementFixture.vault as unknown as InstanceType<typeof Vault>
+).add('Append old replacement/New V4.md');
+await assert.rejects(
+	() => appendOldReplacementFixture.registry.appendMemberToResolvedSeries(
+		appendOldReplacementExpectation,
+		4,
+		appendOldReplacementCandidate,
+	),
+	/changed or disappeared/u,
+);
+assertions += 1;
+equal(
+	appendOldReplacementFixture.persisted.length,
+	0,
+	'a captured old member replaced by a same-path same-ctime TFile is never adopted',
+);
+
+const repairDissolveFixtures = [
+	{
+		id: 'management-dissolve-incomplete',
+		paths: ['Repair dissolve incomplete V1.md'],
+		record: (repairVault: Vault) => ({
+			id: 'management-dissolve-incomplete',
+			slots: [
+				{
+					member: memberAt(repairVault, 'Repair dissolve incomplete V1.md'),
+					version: 1,
+				},
+				{
+					member: {
+						identity: { ctime: 1_000 },
+						lastKnownName: 'Missing V2',
+						path: 'Repair dissolve missing V2.md',
+					},
+					version: 2,
+				},
+			],
+		}),
+		status: 'incomplete',
+	},
+	{
+		id: 'management-dissolve-invalid',
+		paths: [
+			'Repair dissolve invalid V1.md',
+			'Repair dissolve invalid duplicate.md',
+		],
+		record: (repairVault: Vault) => ({
+			id: 'management-dissolve-invalid',
+			slots: [
+				{
+					member: memberAt(repairVault, 'Repair dissolve invalid V1.md'),
+					version: 1,
+				},
+				{
+					member: memberAt(
+						repairVault,
+						'Repair dissolve invalid duplicate.md',
+					),
+					version: 1,
+				},
+			],
+		}),
+		status: 'invalid',
+	},
+] as const;
+for (const fixture of repairDissolveFixtures) {
+	const repairVault = new Vault([...fixture.paths]) as unknown as Vault;
+	const repairRecord = fixture.record(repairVault);
+	let repairPersists = 0;
+	const repairRegistry = new VersionRegistry(
+		repairVault,
+		[repairRecord],
+		async () => {
+			repairPersists += 1;
+		},
+	);
+	equal(
+		repairRegistry.captureAppendExpectation(fixture.id),
+		null,
+		`${fixture.status} relationship never receives append-only authorization`,
+	);
+	equal(
+		repairRegistry.index.getGroupById(fixture.id)?.status,
+		fixture.status,
+		`${fixture.status} repair fixture starts fail-open`,
+	);
+	const capturedRepairRecord = repairRegistry.getRecordById(fixture.id);
+	check(capturedRepairRecord, `${fixture.status} repair captures its exact record`);
+	const capturedRepairRevision = repairRegistry.getRevision();
+	const physicalFiles = fixture.paths.map((path) => repairVault.getFileByPath(path));
+	await repairRegistry.dissolveSeries(
+		fixture.id,
+		capturedRepairRecord,
+		capturedRepairRevision,
+	);
+	equal(
+		repairRegistry.getRecordById(fixture.id),
+		null,
+		`${fixture.status} management repair may explicitly dissolve the relationship`,
+	);
+	equal(
+		repairPersists,
+		1,
+		`${fixture.status} management dissolve persists only the registry change`,
+	);
+	for (const [index, path] of fixture.paths.entries()) {
+		equal(
+			repairVault.getFileByPath(path),
+			physicalFiles[index],
+			`${fixture.status} management dissolve leaves ${path} untouched`,
+		);
+	}
+}
 
 (vault as unknown as InstanceType<typeof Vault>).delete('别处/完全不同的名字.md');
 index.rebuild([{
@@ -3009,6 +6133,988 @@ equal(persistedSnapshots.length, 2, 'both serialized updates persist');
 equal(committedSnapshot.language, 'da', 'overlapping series save keeps language');
 assert.deepEqual(committedSnapshot.series, ['new-path']);
 assertions += 1;
+
+let externalReloadPersists = 0;
+let externallyCommitted = { language: 'en', series: ['before-sync'] };
+const externalReloadBase = externallyCommitted;
+const externalReloadIncoming = { language: 'zh-CN', series: ['from-icloud'] };
+const externalReloadStore = new SerializedDataStore(
+	externallyCommitted,
+	async () => {
+		externalReloadPersists += 1;
+	},
+	(next) => {
+		externallyCommitted = next;
+	},
+);
+const externalSnapshot = await externalReloadStore.reconcile(
+	externalReloadBase,
+	externalReloadIncoming,
+	(_base, _current, incoming) => incoming,
+	(left, right) => JSON.stringify(left) === JSON.stringify(right),
+);
+equal(externalReloadPersists, 0, 'an uncontended external snapshot is never written back');
+assert.deepEqual(externalSnapshot, externallyCommitted);
+assertions += 1;
+await externalReloadStore.update((current) => ({ ...current, language: 'ja' }));
+equal(externalReloadPersists, 1, 'the next local change persists normally after a reload');
+assert.deepEqual(
+	externallyCommitted,
+	{ language: 'ja', series: ['from-icloud'] },
+	'a local settings change derives from the externally reloaded series snapshot',
+);
+assertions += 1;
+
+const localWinnerBase = { language: 'en', series: ['stable'] };
+const localWinnerIncoming = { language: 'zh-CN', series: ['stable'] };
+let localWinnerDisk = localWinnerBase;
+let localWinnerPersists = 0;
+const localWinnerStore = new SerializedDataStore(
+	localWinnerBase,
+	async (next) => {
+		localWinnerPersists += 1;
+		localWinnerDisk = next;
+	},
+	() => undefined,
+);
+await localWinnerStore.update((current) => ({
+	...current,
+	language: 'ja',
+}));
+localWinnerDisk = localWinnerIncoming;
+await localWinnerStore.reconcile(
+	localWinnerBase,
+	localWinnerIncoming,
+	(_base, current) => current,
+	(left, right) => JSON.stringify(left) === JSON.stringify(right),
+);
+equal(
+	localWinnerPersists,
+	2,
+	'a local winner that differs from the captured disk snapshot is persisted',
+);
+assert.deepEqual(
+	localWinnerDisk,
+	{ language: 'ja', series: ['stable'] },
+	'reconciliation never leaves memory and data.json on different winners',
+);
+assertions += 1;
+equal(
+	isVersionPluginDataSnapshot(null),
+	false,
+	'a transiently missing external data file is not adopted as an empty registry',
+);
+equal(
+	isVersionPluginDataSnapshot({ series: null }),
+	false,
+	'a truncated external series field is rejected before normalization',
+);
+check(
+	isVersionPluginDataSnapshot({ series: [] }),
+	'an explicit empty external series array remains a valid synchronized snapshot',
+);
+equal(
+	normalizeExternalPluginData({
+		schemaVersion: 3,
+		series: [{ id: 'damaged-no-slots' }],
+	}),
+	null,
+	'a damaged current-schema record cannot normalize away during external reload',
+);
+equal(
+	normalizeExternalPluginData({
+		schemaVersion: 99,
+		series: [{ id: 'future-no-slots' }],
+	}),
+	null,
+	'an unrecognized future snapshot cannot silently shrink the registry',
+);
+equal(
+	normalizeExternalPluginData({
+		schemaVersion: 99,
+		series: [{
+			id: 'future-valid-shape',
+			slots: [
+				{
+					member: {
+						identity: { ctime: 1_000 },
+						lastKnownName: 'Future A',
+						path: 'Future A.md',
+					},
+					version: 1,
+				},
+				{
+					member: {
+						identity: { ctime: 2_000 },
+						lastKnownName: 'Future B',
+						path: 'Future B.md',
+					},
+					version: 2,
+				},
+			],
+		}],
+	}),
+	null,
+	'a structurally familiar future schema is never downgraded and overwritten',
+);
+equal(
+	normalizeExternalPluginData({ schemaVersion: '3', series: [] }),
+	null,
+	'a malformed explicit schema version is rejected during external reload',
+);
+for (const malformedSchemaVersion of [0, -1, 1.5, null]) {
+	equal(
+		normalizeExternalPluginData({
+			schemaVersion: malformedSchemaVersion,
+			series: [],
+		}),
+		null,
+		`explicit malformed schema ${String(malformedSchemaVersion)} is rejected`,
+	);
+}
+
+let failedReloadCommitted = { language: 'en', series: ['stable'] };
+const failedReloadStore = new SerializedDataStore(
+	failedReloadCommitted,
+	async () => undefined,
+	(next) => {
+		failedReloadCommitted = next;
+	},
+);
+await assert.rejects(
+	() => failedReloadStore.reconcile(
+		failedReloadCommitted,
+		{ language: 'zh-CN', series: ['incoming'] },
+		() => {
+		throw new Error('external read failed');
+		},
+		(left, right) => JSON.stringify(left) === JSON.stringify(right),
+	),
+	/external read failed/u,
+);
+assertions += 1;
+assert.deepEqual(
+	failedReloadCommitted,
+	{ language: 'en', series: ['stable'] },
+	'a failed external loader leaves the committed store snapshot unchanged',
+);
+assertions += 1;
+await failedReloadStore.update((current) => ({ ...current, language: 'da' }));
+equal(
+	failedReloadCommitted.language,
+	'da',
+	'the serialized store queue continues after an external loader failure',
+);
+
+const revisionReloadVault = new Vault([
+	'Revision reload V1.md',
+	'Revision reload V2.md',
+	'Revision reload V3.md',
+]) as unknown as Vault;
+const revisionReloadInitial = [{
+	id: 'revision-reload-series',
+	slots: [
+		{ member: memberAt(revisionReloadVault, 'Revision reload V1.md'), version: 1 },
+		{ member: memberAt(revisionReloadVault, 'Revision reload V2.md'), version: 2 },
+	],
+}];
+const revisionReloadRegistry = new VersionRegistry(
+	revisionReloadVault,
+	revisionReloadInitial,
+	async () => undefined,
+);
+const revisionBeforeReload = revisionReloadRegistry.getRevision();
+await revisionReloadRegistry.reload(async () => revisionReloadRegistry.getRecords());
+equal(
+	revisionReloadRegistry.getRevision(),
+	revisionBeforeReload,
+	'a byte-equivalent external series reload does not invalidate an open workflow',
+);
+const revisionReloadChanged = [{
+	id: 'revision-reload-series',
+	slots: [
+		...revisionReloadInitial[0].slots,
+		{ member: memberAt(revisionReloadVault, 'Revision reload V3.md'), version: 3 },
+	],
+}];
+await revisionReloadRegistry.reload(async () => revisionReloadChanged);
+equal(
+	revisionReloadRegistry.getRevision(),
+	revisionBeforeReload + 1,
+	'a changed external series snapshot increments the registry revision exactly once',
+);
+await revisionReloadRegistry.reload(async () => revisionReloadRegistry.getRecords());
+equal(
+	revisionReloadRegistry.getRevision(),
+	revisionBeforeReload + 1,
+	'replaying the accepted changed series snapshot remains revision-idempotent',
+);
+
+const synchronizedVault = new Vault([
+	'Synchronized topic.md',
+	'Synchronized board.canvas',
+]) as unknown as Vault;
+const synchronizedRecords = [{
+	id: 'synchronized-series',
+	slots: [
+		{ member: memberAt(synchronizedVault, 'Synchronized topic.md'), version: 1 },
+		{ member: memberAt(synchronizedVault, 'Synchronized board.canvas'), version: 2 },
+	],
+}];
+const synchronizedBase = normalizePluginData({
+	filenameTemplate: '{{name}} (V{{version}})',
+	language: 'en',
+	releasedVersionDestination: 'series-folder',
+	schemaVersion: 3,
+	series: [],
+});
+const synchronizedIncoming = {
+	...synchronizedBase,
+	series: synchronizedRecords,
+};
+
+const disjointLocalRecord = {
+	id: 'local-only-series',
+	slots: synchronizedRecords[0].slots.map((slot) => ({
+		member: slot.member ? { ...slot.member } : null,
+		version: slot.version,
+	})),
+};
+const disjointIncomingRecord = {
+	id: 'incoming-only-series',
+	slots: synchronizedRecords[0].slots.map((slot) => ({
+		member: slot.member ? { ...slot.member } : null,
+		version: slot.version,
+	})),
+};
+const disjointBase = {
+	...synchronizedBase,
+	series: synchronizedRecords,
+};
+const disjointMerged = mergeExternalPluginData(
+	disjointBase,
+	{ ...disjointBase, series: [...synchronizedRecords, disjointLocalRecord] },
+	{ ...disjointBase, series: [...synchronizedRecords, disjointIncomingRecord] },
+);
+assert.deepEqual(
+	disjointMerged.series.map((record) => record.id),
+	['incoming-only-series', 'local-only-series', 'synchronized-series'],
+	'disjoint concurrent series additions from both devices are retained',
+);
+assertions += 1;
+
+const splitBaseR0 = normalizePluginData({
+	...synchronizedBase,
+	language: 'en',
+	series: [],
+});
+const splitBaseLocalX = normalizePluginData({
+	...splitBaseR0,
+	series: [{
+		id: 'split-base-local-x',
+		slots: synchronizedRecords[0].slots,
+	}],
+});
+let splitBaseDisk = splitBaseR0;
+let splitBaseAccepted = splitBaseR0;
+let splitBasePersists = 0;
+const splitBaseStore = new SerializedDataStore(
+	splitBaseR0,
+	async (next) => {
+		splitBasePersists += 1;
+		splitBaseDisk = next;
+	},
+	(next) => {
+		splitBaseAccepted = next;
+	},
+);
+await splitBaseStore.update(() => splitBaseLocalX);
+splitBaseDisk = splitBaseR0;
+const splitBaseAfterR0 = await splitBaseStore.reconcile(
+	splitBaseR0,
+	splitBaseR0,
+	mergeExternalPluginData,
+	versionPluginDataEqual,
+);
+assert.deepEqual(
+	splitBaseAfterR0.series.map((record) => record.id),
+	['split-base-local-x'],
+	'old remote R0 cannot erase local X during the first write-back',
+);
+assertions += 1;
+const splitBaseR1 = normalizePluginData({
+	...splitBaseR0,
+	language: 'da',
+	series: [],
+});
+splitBaseDisk = splitBaseR1;
+const splitRegistryAndScalarBase = normalizePluginData({
+	...splitBaseAfterR0,
+	series: splitBaseR0.series,
+});
+const splitBaseAfterR1 = await splitBaseStore.reconcile(
+	splitRegistryAndScalarBase,
+	splitBaseR1,
+	mergeExternalPluginData,
+	versionPluginDataEqual,
+);
+equal(
+	splitBaseAfterR1.language,
+	'da',
+	'a scalar-only R1 update from the old device is accepted',
+);
+assert.deepEqual(
+	splitBaseAfterR1.series.map((record) => record.id),
+	['split-base-local-x'],
+	'the captured remote registry base preserves local X when R1 still has series=[]',
+);
+assertions += 1;
+assert.deepEqual(
+	splitBaseDisk,
+	splitBaseAfterR1,
+	'the safe X plus da reconciliation is written back to synchronized storage',
+);
+assertions += 1;
+assert.deepEqual(
+	splitBaseAccepted,
+	splitBaseAfterR1,
+	'the in-memory settings accept exactly the split-base reconciliation',
+);
+assertions += 1;
+equal(
+	splitBasePersists,
+	3,
+	'local X and both old-device reconciliations each reach durable storage once',
+);
+equal(
+	mergeExternalPluginData(
+		splitBaseAfterR0,
+		splitBaseAfterR0,
+		splitBaseR1,
+	).series.length,
+	0,
+	'using the reconciled X snapshot as the registry base would reproduce the data-loss regression',
+);
+assert.deepEqual(
+	mergeExternalPluginData(
+		splitBaseR0,
+		splitBaseLocalX,
+		splitBaseR0,
+	).series.map((record) => record.id),
+	['split-base-local-x'],
+	'a restart-safe empty ancestor preserves local X when the first external snapshot is old R0',
+);
+assertions += 1;
+
+const conflictVault = new Vault([
+	'Conflict topic.md',
+	'Conflict second.md',
+	'Conflict third.md',
+]) as unknown as Vault;
+const conflictBaseRecord = {
+	id: 'same-series-conflict',
+	slots: [
+		{ member: memberAt(conflictVault, 'Conflict topic.md'), version: 1 },
+		{ member: memberAt(conflictVault, 'Conflict second.md'), version: 2 },
+	],
+};
+const conflictCurrentRecord = {
+	id: conflictBaseRecord.id,
+	slots: [
+		{ member: conflictBaseRecord.slots[1].member, version: 1 },
+		{ member: conflictBaseRecord.slots[0].member, version: 2 },
+	],
+};
+const conflictIncomingRecord = {
+	id: conflictBaseRecord.id,
+	slots: [
+		...conflictBaseRecord.slots,
+		{ member: memberAt(conflictVault, 'Conflict third.md'), version: 3 },
+	],
+};
+const restartConflictMerged = mergeExternalPluginData(
+	{ ...synchronizedBase, series: [] },
+	{ ...synchronizedBase, series: [conflictCurrentRecord] },
+	{ ...synchronizedBase, series: [conflictIncomingRecord] },
+);
+equal(
+	restartConflictMerged.series.length,
+	2,
+	'a restart-safe empty ancestor preserves both live mappings for a first same-ID conflict',
+);
+const restartConflictIndex = new VersionIndex(conflictVault);
+restartConflictIndex.rebuild(restartConflictMerged.series);
+assert.deepEqual(
+	restartConflictIndex.getAllGroups().map((group) => group.status),
+	['invalid', 'invalid'],
+	'a first same-ID conflict after restart fails open for explicit repair',
+);
+assertions += 1;
+const conflictBaseData = {
+	...synchronizedBase,
+	series: [conflictBaseRecord],
+};
+const conflictMerged = mergeExternalPluginData(
+	conflictBaseData,
+	{ ...conflictBaseData, series: [conflictCurrentRecord] },
+	{ ...conflictBaseData, series: [conflictIncomingRecord] },
+);
+const conflictMergedWithSidesReversed = mergeExternalPluginData(
+	conflictBaseData,
+	{ ...conflictBaseData, series: [conflictIncomingRecord] },
+	{ ...conflictBaseData, series: [conflictCurrentRecord] },
+);
+assert.deepEqual(
+	conflictMergedWithSidesReversed,
+	conflictMerged,
+	'same-series conflict recovery is canonical when device sides are reversed',
+);
+assertions += 1;
+equal(
+	conflictMerged.series.length,
+	2,
+	'divergent edits to one series retain both relationship snapshots',
+);
+equal(
+	conflictMerged.series[0].id,
+	'same-series-conflict',
+	'the canonical conflict snapshot keeps the stable original ID',
+);
+check(
+	conflictMerged.series[1].id.startsWith('same-series-conflict--sync-conflict-'),
+	'the incoming conflict snapshot receives a deterministic recovery ID',
+);
+assert.deepEqual(
+	conflictMerged.series.map((record) => record.slots.map((slot) => [
+		slot.version,
+		slot.member?.path,
+	])),
+	[
+		[
+			[1, 'Conflict topic.md'],
+			[2, 'Conflict second.md'],
+			[3, 'Conflict third.md'],
+		],
+		[
+			[1, 'Conflict second.md'],
+			[2, 'Conflict topic.md'],
+		],
+	],
+	'conflict recovery changes neither side slot mapping',
+);
+assertions += 1;
+const conflictIndex = new VersionIndex(conflictVault);
+conflictIndex.rebuild(conflictMerged.series);
+assert.deepEqual(
+	conflictIndex.getAllGroups().map((group) => group.status),
+	['invalid', 'invalid'],
+	'overlapping conflict snapshots fail open instead of hiding either side',
+);
+assertions += 1;
+const replayedOldConflictSnapshot = mergeExternalPluginData(
+	conflictMerged,
+	conflictMerged,
+	{ ...conflictBaseData, series: [conflictIncomingRecord] },
+);
+assert.deepEqual(
+	replayedOldConflictSnapshot,
+	conflictMerged,
+	'an unresolved recovery family survives replay of an older device snapshot',
+);
+assertions += 1;
+
+let conflictReconcileDisk = conflictBaseData;
+let conflictReconcilePersists = 0;
+const conflictReconcileStore = new SerializedDataStore(
+	conflictBaseData,
+	async (next) => {
+		conflictReconcilePersists += 1;
+		conflictReconcileDisk = next;
+	},
+	() => undefined,
+);
+await conflictReconcileStore.update(() => ({
+	...conflictBaseData,
+	series: [conflictCurrentRecord],
+}));
+conflictReconcileDisk = {
+	...conflictBaseData,
+	series: [conflictIncomingRecord],
+};
+await conflictReconcileStore.reconcile(
+	conflictBaseData,
+	conflictReconcileDisk,
+	mergeExternalPluginData,
+	versionPluginDataEqual,
+);
+equal(
+	conflictReconcilePersists,
+	2,
+	'a same-series conflict is persisted once after the preceding local save',
+);
+equal(
+	conflictReconcileDisk.series.length,
+	2,
+	'the persisted conflict snapshot retains both device mappings',
+);
+
+const localDeleteRemoteEdit = mergeExternalPluginData(
+	conflictBaseData,
+	{ ...conflictBaseData, series: [] },
+	{ ...conflictBaseData, series: [conflictIncomingRecord] },
+);
+assert.deepEqual(
+	localDeleteRemoteEdit.series,
+	[conflictIncomingRecord],
+	'a remote edit survives a concurrent local relationship deletion',
+);
+assertions += 1;
+const localEditRemoteDelete = mergeExternalPluginData(
+	conflictBaseData,
+	{ ...conflictBaseData, series: [conflictCurrentRecord] },
+	{ ...conflictBaseData, series: [] },
+);
+assert.deepEqual(
+	localEditRemoteDelete.series,
+	[conflictCurrentRecord],
+	'a local edit survives a concurrent remote relationship deletion',
+);
+assertions += 1;
+
+const orderedConflictVariant = (name: string) => ({
+	id: 'ordered-sync-conflict',
+	slots: [
+		{
+			member: {
+				identity: { ctime: 1_000 },
+				lastKnownName: `${name}1`,
+				path: `${name}1.md`,
+			},
+			version: 1,
+		},
+		{
+			member: {
+				identity: { ctime: 2_000 },
+				lastKnownName: `${name}2`,
+				path: `${name}2.md`,
+			},
+			version: 2,
+		},
+	],
+});
+const orderedConflictBase = {
+	...synchronizedBase,
+	series: [orderedConflictVariant('A')],
+};
+const orderedConflictMerged = mergeExternalPluginData(
+	orderedConflictBase,
+	{ ...orderedConflictBase, series: [orderedConflictVariant('B')] },
+	{ ...orderedConflictBase, series: [orderedConflictVariant('C')] },
+);
+const orderedConflictOldReplay = mergeExternalPluginData(
+	orderedConflictBase,
+	orderedConflictMerged,
+	orderedConflictBase,
+);
+assert.deepEqual(
+	orderedConflictOldReplay,
+	orderedConflictMerged,
+	'an older A snapshot cannot duplicate B after the B/C recovery family exists',
+);
+assertions += 1;
+const orderedConflictWithNewVariant = mergeExternalPluginData(
+	orderedConflictBase,
+	orderedConflictMerged,
+	{ ...orderedConflictBase, series: [orderedConflictVariant('D')] },
+);
+const orderedConflictMappings = (data: typeof orderedConflictWithNewVariant) =>
+	data.series.map((record) => record.slots.map((slot) => [
+		slot.version,
+		slot.member?.path,
+	])).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+assert.deepEqual(
+	orderedConflictMappings(orderedConflictWithNewVariant),
+	['B', 'C', 'D'].map((name) => orderedConflictVariant(name).slots.map((slot) => [
+		slot.version,
+		slot.member?.path,
+	])).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+	'a genuinely new D mapping is added once without covering B or C',
+);
+assertions += 1;
+const orderedConflictNewReplay = mergeExternalPluginData(
+	orderedConflictBase,
+	orderedConflictWithNewVariant,
+	{ ...orderedConflictBase, series: [orderedConflictVariant('D')] },
+);
+assert.deepEqual(
+	orderedConflictNewReplay,
+	orderedConflictWithNewVariant,
+	'replaying D after recovery is idempotent and does not grow the family',
+);
+assertions += 1;
+
+let synchronizedData = synchronizedBase;
+let synchronizedPersists = 0;
+const synchronizedStore = new SerializedDataStore(
+	synchronizedData,
+	async (next) => {
+		synchronizedPersists += 1;
+		synchronizedData = next;
+	},
+	(next) => {
+		synchronizedData = next;
+	},
+);
+const synchronizedRegistry = new VersionRegistry(
+	synchronizedVault,
+	[],
+	async (series) => synchronizedStore.update((current) => ({
+		...current,
+		series,
+	})),
+);
+await synchronizedRegistry.reload(async () => {
+	const next = await synchronizedStore.reconcile(
+		synchronizedBase,
+		synchronizedIncoming,
+		mergeExternalPluginData,
+		versionPluginDataEqual,
+	);
+	return next.series;
+});
+equal(synchronizedPersists, 0, 'registry reload adopts external data without persistence');
+equal(
+	synchronizedRegistry.index.getGroupById('synchronized-series')?.status,
+	'healthy',
+	'an externally synchronized relationship becomes active without restarting the plugin',
+);
+const staleManagementSnapshot = synchronizedRegistry.getRecordById(
+	'synchronized-series',
+);
+check(staleManagementSnapshot, 'management captures the original synchronized series');
+const externallySwappedRecords = [{
+	id: 'synchronized-series',
+	slots: [
+		{ member: synchronizedRecords[0].slots[1].member, version: 1 },
+		{ member: synchronizedRecords[0].slots[0].member, version: 2 },
+	],
+}];
+await synchronizedRegistry.reload(async () => externallySwappedRecords);
+await assert.rejects(
+	() => synchronizedRegistry.saveSeriesSlots(
+		'synchronized-series',
+		staleManagementSnapshot.slots,
+		staleManagementSnapshot,
+	),
+	/changed while this editor was open/u,
+);
+assertions += 1;
+assert.deepEqual(
+	synchronizedRegistry.getRecordById('synchronized-series')?.slots.map(
+		(slot) => [slot.version, slot.member?.path],
+	),
+	[
+		[1, 'Synchronized board.canvas'],
+		[2, 'Synchronized topic.md'],
+	],
+	'a stale management save cannot overwrite an externally synchronized slot swap',
+);
+assertions += 1;
+equal(
+	synchronizedPersists,
+	0,
+	'rejecting a stale editor performs no registry persistence or file operation',
+);
+await assert.rejects(
+	() => synchronizedRegistry.dissolveSeries(
+		'synchronized-series',
+		staleManagementSnapshot,
+	),
+	/changed while this editor was open/u,
+);
+assertions += 1;
+equal(
+	synchronizedRegistry.getRecords().length,
+	1,
+	'a stale one-version confirmation cannot dissolve an externally changed series',
+);
+await assert.rejects(
+	() => synchronizedRegistry.reload(async () => {
+		throw new Error('registry reload failed');
+	}),
+	/registry reload failed/u,
+);
+assertions += 1;
+equal(
+	synchronizedRegistry.index.getGroupById('synchronized-series')?.status,
+	'healthy',
+	'a failed registry loader preserves the previous index snapshot',
+);
+await synchronizedRegistry.dissolveSeries('synchronized-series');
+equal(
+	synchronizedRegistry.getRecords().length,
+	0,
+	'the registry mutation queue continues after an external loader failure',
+);
+
+const overlappingReloadVault = new Vault([
+	'Overlapping/S1.md',
+	'Overlapping/S2.md',
+	'Overlapping/S3.md',
+	'Overlapping/T2.md',
+]) as unknown as Vault;
+const overlappingSeriesS = {
+	id: 'overlapping-series-s',
+	slots: [
+		{ member: memberAt(overlappingReloadVault, 'Overlapping/S1.md'), version: 1 },
+		{ member: memberAt(overlappingReloadVault, 'Overlapping/S2.md'), version: 2 },
+	],
+};
+const overlappingSeriesT = {
+	id: 'overlapping-series-t',
+	slots: [
+		{ member: overlappingSeriesS.slots[0].member, version: 1 },
+		{ member: memberAt(overlappingReloadVault, 'Overlapping/T2.md'), version: 2 },
+	],
+};
+let overlappingMutationPersists = 0;
+const overlappingReloadRegistry = new VersionRegistry(
+	overlappingReloadVault,
+	[overlappingSeriesS],
+	async () => {
+		overlappingMutationPersists += 1;
+	},
+);
+const overlappingExpectedS = overlappingReloadRegistry.getRecordById(
+	'overlapping-series-s',
+);
+check(overlappingExpectedS, 'the original S relationship is captured before reload');
+const overlappingS2 = overlappingReloadRegistry.index
+	.getGroupById('overlapping-series-s')?.versions.find(
+		(member) => member.version === 2,
+	);
+check(overlappingS2, 'the exact S2 member is captured before reload');
+const overlappingS2Capture = captureVersionForTrash(overlappingS2);
+await overlappingReloadRegistry.reload(async () => [
+	overlappingSeriesS,
+	overlappingSeriesT,
+]);
+equal(
+	overlappingReloadRegistry.index.getGroupById('overlapping-series-s')?.status,
+	'invalid',
+	'an externally added T relationship makes S ownership ambiguous',
+);
+const overlappingNewMember = overlappingReloadVault.getFileByPath(
+	'Overlapping/S3.md',
+);
+check(overlappingNewMember, 'the proposed S3 file exists');
+const overlappingBlockedMutations: Array<[string, () => Promise<unknown>]> = [
+	[
+		'release',
+		() => overlappingReloadRegistry.releaseVersionMembers(
+			'overlapping-series-s',
+			[overlappingS2Capture],
+			overlappingExpectedS,
+		),
+	],
+	[
+		'dissolve',
+		() => overlappingReloadRegistry.dissolveSeries(
+			'overlapping-series-s',
+			overlappingExpectedS,
+		),
+	],
+	[
+		'save',
+		() => overlappingReloadRegistry.saveSeriesSlots(
+			'overlapping-series-s',
+			overlappingExpectedS.slots,
+			overlappingExpectedS,
+		),
+	],
+	[
+		'add',
+		() => overlappingReloadRegistry.addMember(
+			'overlapping-series-s',
+			3,
+			overlappingNewMember,
+		),
+	],
+];
+for (const [operationName, operation] of overlappingBlockedMutations) {
+	await assert.rejects(
+		operation,
+		`external overlap must block the stale S ${operationName} operation`,
+	);
+	assertions += 1;
+}
+equal(
+	overlappingMutationPersists,
+	0,
+	'no stale S mutation persists after external ownership becomes ambiguous',
+);
+assert.deepEqual(
+	overlappingReloadRegistry.getRecords(),
+	[overlappingSeriesS, overlappingSeriesT],
+	'blocked S operations preserve both externally synchronized relationships exactly',
+);
+assertions += 1;
+
+const staleSourceVault = new Vault([
+	'Stale source/Old S1.md',
+	'Stale source/Old S2.md',
+	'Stale source/New S1.md',
+	'Stale source/New S2.md',
+	'Stale source/T2.md',
+]) as unknown as Vault;
+const staleSourceSeriesS = {
+	id: 'stale-source-series-s',
+	slots: [
+		{ member: memberAt(staleSourceVault, 'Stale source/Old S1.md'), version: 1 },
+		{ member: memberAt(staleSourceVault, 'Stale source/Old S2.md'), version: 2 },
+	],
+};
+const staleSourceSeriesT = {
+	id: 'stale-source-series-t',
+	slots: [
+		{ member: staleSourceSeriesS.slots[0].member, version: 1 },
+		{ member: memberAt(staleSourceVault, 'Stale source/T2.md'), version: 2 },
+	],
+};
+let staleSourcePersists = 0;
+const staleSourceRegistry = new VersionRegistry(
+	staleSourceVault,
+	[staleSourceSeriesS],
+	async () => {
+		staleSourcePersists += 1;
+	},
+);
+const staleSourceExpectedS = staleSourceRegistry.getRecordById(
+	'stale-source-series-s',
+);
+check(staleSourceExpectedS, 'management captures S before the external overlap');
+const staleSourceRevision = staleSourceRegistry.getRevision();
+const staleSourceFinalSlots = [
+	{ member: memberAt(staleSourceVault, 'Stale source/New S1.md'), version: 1 },
+	{ member: memberAt(staleSourceVault, 'Stale source/New S2.md'), version: 2 },
+];
+await staleSourceRegistry.reload(async () => [
+	staleSourceSeriesS,
+	staleSourceSeriesT,
+]);
+assert.deepEqual(
+	staleSourceRegistry.getRecordById('stale-source-series-s'),
+	staleSourceExpectedS,
+	'the external reload leaves the captured S record itself byte-for-byte unchanged',
+);
+assertions += 1;
+await assert.rejects(
+	() => staleSourceRegistry.saveSeriesSlots(
+		'stale-source-series-s',
+		staleSourceFinalSlots,
+		staleSourceExpectedS,
+		staleSourceRevision,
+	),
+	/registry changed while this editor was open/u,
+	'a stale editor cannot evade overlap detection by replacing every old S path',
+);
+assertions += 1;
+equal(
+	staleSourcePersists,
+	0,
+	'a revision rejection occurs before the stale replacement can persist',
+);
+assert.deepEqual(
+	staleSourceRegistry.getRecords(),
+	[staleSourceSeriesS, staleSourceSeriesT],
+	'the revision rejection preserves S and the externally synchronized overlapping T',
+);
+assertions += 1;
+
+const queuedReloadVault = new Vault([
+	'Queued reload topic.md',
+	'Queued reload member.md',
+]) as unknown as Vault;
+const queuedReloadRecords = [{
+	id: 'queued-reload-series',
+	slots: [
+		{ member: memberAt(queuedReloadVault, 'Queued reload topic.md'), version: 1 },
+		{ member: memberAt(queuedReloadVault, 'Queued reload member.md'), version: 2 },
+	],
+}];
+const queuedReloadBase = normalizePluginData({
+	filenameTemplate: '{{name}} (V{{version}})',
+	language: 'en',
+	releasedVersionDestination: 'series-folder',
+	schemaVersion: 3,
+	series: [],
+});
+const queuedReloadIncoming = {
+	...queuedReloadBase,
+	series: queuedReloadRecords,
+};
+let queuedReloadDisk = queuedReloadIncoming;
+let releaseQueuedReloadSave: (() => void) | null = null;
+const queuedReloadSaveGate = new Promise<void>((resolve) => {
+	releaseQueuedReloadSave = resolve;
+});
+let queuedReloadPersists = 0;
+let queuedReloadData = queuedReloadBase;
+const queuedReloadStore = new SerializedDataStore(
+	queuedReloadData,
+	async (next) => {
+		queuedReloadPersists += 1;
+		if (queuedReloadPersists === 1) {
+			await queuedReloadSaveGate;
+		}
+		queuedReloadDisk = next;
+	},
+	(next) => {
+		queuedReloadData = next;
+	},
+);
+const queuedReloadRegistry = new VersionRegistry(
+	queuedReloadVault,
+	[],
+	async (series) => queuedReloadStore.update((current) => ({
+		...current,
+		series,
+	})),
+);
+const queuedLocalSettingsSave = queuedReloadStore.update((current) => ({
+	...current,
+	language: 'ja',
+}));
+const queuedExternalReload = queuedReloadRegistry.reload(async () => {
+	const next = await queuedReloadStore.reconcile(
+		queuedReloadBase,
+		queuedReloadIncoming,
+		mergeExternalPluginData,
+		versionPluginDataEqual,
+	);
+	return next.series;
+});
+await Promise.resolve();
+equal(
+	queuedReloadPersists,
+	1,
+	'a concurrent stale local settings save reaches persistence before reconciliation',
+);
+releaseQueuedReloadSave?.();
+await Promise.all([queuedLocalSettingsSave, queuedExternalReload]);
+equal(
+	queuedReloadPersists,
+	2,
+	'a raced local save is followed by one persisted merged snapshot',
+);
+equal(queuedReloadDisk.language, 'ja', 'the merged disk snapshot preserves the local setting');
+assert.deepEqual(queuedReloadDisk.series, queuedReloadRecords);
+assertions += 1;
+equal(
+	queuedReloadRegistry.index.getGroupById('queued-reload-series')?.status,
+	'healthy',
+	'the captured external series survives a concurrent stale whole-file settings save',
+);
 
 let rejectNextPersist = true;
 let failureCommitted = { language: 'en', series: ['before'] };

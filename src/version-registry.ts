@@ -1,13 +1,22 @@
 import { normalizePath, TFile, Vault } from 'obsidian';
+import { captureFile, isCapturedFile } from './captured-file';
 import {
 	cloneSeriesRecords,
 	memberMatchesFile,
 	memberRecordFromFile,
+	memberResolvesToFile,
+	VersionMemberRecord,
 	VersionSeriesRecord,
 	VersionSlotRecord,
+	versionSeriesRecordsEqual,
 } from './version-data';
 import { isVersionableFile } from './version-file-types';
-import { MAX_VERSION, VersionIndex } from './version-index';
+import {
+	isVersionGroupExactlyResolved,
+	MAX_VERSION,
+	VersionGroup,
+	VersionIndex,
+} from './version-index';
 
 type PersistSeries = (series: VersionSeriesRecord[]) => Promise<void>;
 
@@ -25,10 +34,54 @@ export interface ReleaseVersionMembersResult {
 	releasedVersions: number[];
 }
 
+/**
+ * One-shot compare-and-swap guard for adding a new member without rewriting
+ * any existing member identity. The live file references are intentionally
+ * process-local: they let the commit reject a same-path replacement that
+ * happened after the creation dialog was opened, including when both files
+ * expose the same whole-second ctime.
+ */
+interface ResolvedSeriesExpectation {
+	readonly members: ReadonlyArray<{
+		readonly ctime: number;
+		readonly file: TFile;
+		readonly path: string;
+		readonly version: number;
+	}>;
+	readonly revision: number;
+	readonly series: VersionSeriesRecord;
+	readonly seriesId: string;
+}
+
+export interface VersionAppendExpectation extends ResolvedSeriesExpectation {
+	readonly purpose: 'append';
+}
+
+/**
+ * Process-local authorization for editing the slot mapping of one fully
+ * resolved relationship. Unlike the general repair path, this expectation may
+ * accept the narrow cross-device ctime precision mismatch. Every pre-existing
+ * member record must still be preserved byte-for-byte and remain attached to
+ * the exact TFile object captured here.
+ */
+export interface VersionManagementExpectation extends ResolvedSeriesExpectation {
+	readonly purpose: 'management';
+}
+
+export interface VersionManagementSlotAssignment {
+	readonly file: TFile;
+	readonly member: VersionMemberRecord;
+	readonly version: number;
+}
+
 export class VersionRegistry {
 	readonly index: VersionIndex;
+	private readonly appendExpectations = new WeakSet<VersionAppendExpectation>();
+	private readonly managementExpectations =
+		new WeakSet<VersionManagementExpectation>();
 	private mutationQueue: Promise<void> = Promise.resolve();
 	private records: VersionSeriesRecord[];
+	private revision = 0;
 
 	constructor(
 		private readonly vault: Vault,
@@ -51,8 +104,168 @@ export class VersionRegistry {
 			: null;
 	}
 
+	/**
+	 * Monotonic in-memory generation for compare-and-swap across workflows that
+	 * move real files before their final registry commit. Rebuild-only Vault UI
+	 * events do not advance it; successful local commits and external reloads do.
+	 */
+	getRevision(): number {
+		return this.revision;
+	}
+
+	/**
+	 * Capture the exact registry generation and the currently resolved TFile
+	 * objects for a later append-only commit. Both exact and narrowly
+	 * precision-compatible healthy groups are eligible; incomplete or ambiguous
+	 * relationships return null and remain fail-open.
+	 */
+	captureAppendExpectation(seriesId: string): VersionAppendExpectation | null {
+		const expectation = this.captureResolvedSeriesExpectation(
+			seriesId,
+			'append',
+		);
+		if (expectation) {
+			this.appendExpectations.add(expectation);
+		}
+		return expectation;
+	}
+
+	/**
+	 * Capture a fresh, read-only view of every live member before opening Version
+	 * management. Rebuilding here prevents a cached exact group from being mixed
+	 * with newer iCloud TFile metadata inside the modal.
+	 */
+	captureManagementExpectation(
+		seriesId: string,
+	): VersionManagementExpectation | null {
+		const expectation = this.captureResolvedSeriesExpectation(
+			seriesId,
+			'management',
+		);
+		if (expectation) {
+			this.managementExpectations.add(expectation);
+		}
+		return expectation;
+	}
+
+	private captureResolvedSeriesExpectation(
+		seriesId: string,
+		purpose: 'append',
+	): VersionAppendExpectation | null;
+	private captureResolvedSeriesExpectation(
+		seriesId: string,
+		purpose: 'management',
+	): VersionManagementExpectation | null;
+	private captureResolvedSeriesExpectation(
+		seriesId: string,
+		purpose: 'append' | 'management',
+	): VersionAppendExpectation | VersionManagementExpectation | null {
+		// Vault events normally keep the index current, but rebuilding here makes
+		// this authorization independent of event delivery timing.
+		this.index.rebuild(this.records);
+		const group = this.index.getGroupById(seriesId);
+		const series = this.getRecordById(seriesId);
+		if (!group || group.status !== 'healthy' || !series) {
+			return null;
+		}
+
+		const members: Array<VersionAppendExpectation['members'][number]> = [];
+		for (const slot of series.slots) {
+			if (!slot.member) {
+				return null;
+			}
+			const file = this.vault.getFileByPath(slot.member.path);
+			const indexed = group.versions.find((candidate) =>
+				candidate.version === slot.version &&
+				candidate.path === slot.member?.path &&
+				candidate.file === file);
+			if (
+				!file ||
+				!isVersionableFile(file) ||
+				!memberResolvesToFile(slot.member, file) ||
+				!indexed
+			) {
+				return null;
+			}
+			members.push({
+				ctime: file.stat.ctime,
+				file,
+				path: file.path,
+				version: slot.version,
+			});
+		}
+		if (members.length !== group.versions.length) {
+			return null;
+		}
+
+		const expectation = {
+			members,
+			purpose,
+			revision: this.revision,
+			series,
+			seriesId,
+		} as VersionAppendExpectation | VersionManagementExpectation;
+		return expectation;
+	}
+
 	rebuild(): void {
 		this.index.rebuild(this.records);
+	}
+
+	/**
+	 * Resolve one relationship for an operation that may mutate a real file.
+	 * TFile metadata can change in place without a Vault event, so never trust a
+	 * previously computed exact identityStatus: rebuild and compare every raw
+	 * registry member with its current live TFile before returning authorization.
+	 */
+	resolveExactlyMatchedGroup(seriesId: string): VersionGroup | null {
+		this.index.rebuild(this.records);
+		const group = this.index.getGroupById(seriesId);
+		const series = this.getRecordById(seriesId);
+		if (!group || !series || !isVersionGroupExactlyResolved(group)) {
+			return null;
+		}
+		if (series.slots.length !== group.versions.length) {
+			return null;
+		}
+
+		for (const slot of series.slots) {
+			if (!slot.member) {
+				return null;
+			}
+			const file = this.vault.getFileByPath(slot.member.path);
+			const indexed = group.versions.find((candidate) =>
+				candidate.version === slot.version &&
+				candidate.path === slot.member?.path &&
+				candidate.file === file);
+			if (
+				!file ||
+				!isVersionableFile(file) ||
+				!memberMatchesFile(slot.member, file) ||
+				!indexed
+			) {
+				return null;
+			}
+		}
+		return group;
+	}
+
+	/**
+	 * Replace the in-memory snapshot after plugin data changes externally.
+	 * Loading happens inside the registry mutation queue so a synchronized
+	 * snapshot cannot be applied in the middle of a local relationship save.
+	 * External data is deliberately not persisted again here.
+	 */
+	reload(load: () => Promise<VersionSeriesRecord[]>): Promise<void> {
+		return this.enqueue(async () => {
+			const next = cloneSeriesRecords(await load());
+			const registryChanged = !versionSeriesRecordsEqual(this.records, next);
+			this.records = next;
+			this.index.rebuild(this.records);
+			if (registryChanged) {
+				this.revision += 1;
+			}
+		});
 	}
 
 	/**
@@ -137,6 +350,8 @@ export class VersionRegistry {
 			if (!series) {
 				throw new Error('Version series no longer exists.');
 			}
+			this.assertSeriesExactlyResolved(seriesId);
+			this.assertMembersResolve(series.slots);
 			const existingSlot = series.slots.find((slot) => slot.version === version);
 			if (existingSlot?.member) {
 				throw new Error(`V${version} is already occupied.`);
@@ -148,6 +363,253 @@ export class VersionRegistry {
 				series.slots.push({ member: memberRecordFromFile(file), version });
 			}
 			series.slots.sort((left, right) => left.version - right.version);
+			await this.commit(next);
+		});
+	}
+
+	/**
+	 * Add one new file to a healthy exact or precision-compatible relationship.
+	 * This is deliberately narrower than addMember: every pre-existing slot is
+	 * retained byte-for-byte, so a device never rebases another device's ctime.
+	 */
+	async appendMemberToResolvedSeries(
+		expectation: VersionAppendExpectation,
+		version: number,
+		file: TFile,
+	): Promise<void> {
+		// TFile is mutable in Obsidian. Freeze the newly created file's complete
+		// identity before this operation waits behind another registry mutation so
+		// a rename or same-path replacement cannot change what gets registered.
+		const fileCapture = captureFile(file);
+		const member = memberRecordFromFile(file);
+		return this.enqueue(async () => {
+			if (!this.appendExpectations.delete(expectation)) {
+				throw new Error('Version append authorization is no longer valid.');
+			}
+			if (expectation.purpose !== 'append') {
+				throw new Error('Version append authorization is invalid.');
+			}
+			if (!Number.isInteger(version) || version < 1 || version > MAX_VERSION) {
+				throw new Error(`Invalid version number: V${version}.`);
+			}
+			if (expectation.seriesId !== expectation.series.id) {
+				throw new Error('Version append authorization is invalid.');
+			}
+
+			this.assertExpectedRevision(expectation.revision);
+			this.assertExpectedSeries(expectation.seriesId, expectation.series);
+			this.index.rebuild(this.records);
+			const group = this.index.getGroupById(expectation.seriesId);
+			if (!group || group.status !== 'healthy') {
+				throw new Error(
+					'Version series changed or disappeared before the relationship was saved.',
+				);
+			}
+
+			const matchingIndexes = this.records.flatMap((record, index) =>
+				record.id === expectation.seriesId ? [index] : []);
+			if (matchingIndexes.length !== 1) {
+				throw new Error('Version series could not be resolved safely.');
+			}
+			const seriesIndex = matchingIndexes[0];
+			const series = this.records[seriesIndex];
+			this.assertResolvedSeriesExpectation(series, expectation);
+			this.assertPathsAreUnmanaged(
+				series.slots.flatMap((slot) => slot.member ? [slot.member.path] : []),
+				seriesIndex,
+			);
+			const liveFile = this.vault.getFileByPath(fileCapture.path);
+			if (
+				!isCapturedFile(liveFile, fileCapture) ||
+				!isVersionableFile(liveFile)
+			) {
+				throw new Error(
+					`${fileCapture.path} is no longer the same supported file.`,
+				);
+			}
+			this.assertPathsAreUnmanaged([member.path]);
+			if (series.slots.some((slot) => slot.version === version)) {
+				throw new Error(`V${version} is already occupied.`);
+			}
+
+			const next = this.getRecords();
+			next[seriesIndex].slots.push({
+				member,
+				version,
+			});
+			await this.commit(next);
+		});
+	}
+
+	/**
+	 * Save a reordered or reduced slot mapping for a healthy exact or
+	 * precision-compatible series. Old member records are not regenerated on the
+	 * current device: callers must pass the original record alongside the exact
+	 * TFile object captured when management opened. Newly assigned files use
+	 * their current exact identity. Any registry race or change to a retained
+	 * member rejects the operation; a member explicitly removed from the final
+	 * mapping may meanwhile change because forgetting that mapping is safe.
+	 */
+	async saveResolvedSeriesManagement(
+		expectation: VersionManagementExpectation,
+		assignments: VersionManagementSlotAssignment[],
+	): Promise<string> {
+		const capturedAssignments = assignments.map((assignment) => ({
+			capture: captureFile(assignment.file),
+			member: cloneMemberRecord(assignment.member),
+			version: assignment.version,
+		}));
+		return this.enqueue(async () => {
+			if (!this.managementExpectations.delete(expectation)) {
+				throw new Error('Version management authorization is no longer valid.');
+			}
+			if (expectation.purpose !== 'management') {
+				throw new Error('Version management authorization is invalid.');
+			}
+
+			this.assertExpectedRevision(expectation.revision);
+			this.assertExpectedSeries(expectation.seriesId, expectation.series);
+			this.index.rebuild(this.records);
+
+			const matchingIndexes = this.records.flatMap((record, index) =>
+				record.id === expectation.seriesId ? [index] : []);
+			if (matchingIndexes.length !== 1) {
+				throw new Error('Version series could not be resolved safely.');
+			}
+			const seriesIndex = matchingIndexes[0];
+			const series = this.records[seriesIndex];
+
+			const slots: VersionSlotRecord[] = capturedAssignments.map(
+				({ member, version }) => ({ member, version }),
+			);
+			validateSlots(slots, true);
+			this.assertPathsAreUnmanaged(
+				slots.flatMap((slot) => slot.member ? [slot.member.path] : []),
+				seriesIndex,
+			);
+
+			const originalByFile = new Map<TFile, VersionMemberRecord>();
+			const originalByPath = new Map<string, TFile>();
+			if (expectation.members.length !== series.slots.length) {
+				throw new Error(
+					'Version relationship authorization no longer matches the series.',
+				);
+			}
+			for (const expected of expectation.members) {
+				const originalSlot = series.slots.find((slot) =>
+					slot.version === expected.version &&
+					slot.member?.path === expected.path);
+				if (
+					!originalSlot?.member ||
+					originalByFile.has(expected.file) ||
+					originalByPath.has(expected.path)
+				) {
+					throw new Error('Version management authorization is ambiguous.');
+				}
+				originalByFile.set(expected.file, originalSlot.member);
+				originalByPath.set(expected.path, expected.file);
+			}
+
+			for (const assignment of capturedAssignments) {
+				const live = this.vault.getFileByPath(assignment.capture.path);
+				if (
+					!isCapturedFile(live, assignment.capture) ||
+					!isVersionableFile(live)
+				) {
+					throw new Error(
+						`${assignment.capture.path} is no longer the same supported file.`,
+					);
+				}
+				if (assignment.member.path !== assignment.capture.path) {
+					throw new Error(
+						`${assignment.capture.path} no longer matches its Version member record.`,
+					);
+				}
+
+				const originalMember = originalByFile.get(assignment.capture.file);
+				if (originalMember) {
+					const expected = expectation.members.find(
+						(candidate) => candidate.file === assignment.capture.file,
+					);
+					if (
+						!expected ||
+						expected.path !== assignment.capture.path ||
+						expected.file.path !== expected.path ||
+						expected.file.stat.ctime !== expected.ctime ||
+						!memberRecordsEqual(assignment.member, originalMember) ||
+						!memberResolvesToFile(originalMember, assignment.capture.file)
+					) {
+						throw new Error(
+							`${assignment.capture.path} no longer matches its original Version identity.`,
+						);
+					}
+					continue;
+				}
+				if (originalByPath.has(assignment.member.path)) {
+					throw new Error(
+						`${assignment.capture.path} is not the originally registered Version file.`,
+					);
+				}
+
+				const currentMember = memberRecordFromFile(assignment.capture.file);
+				if (
+					!memberRecordsEqual(assignment.member, currentMember) ||
+					!memberMatchesFile(assignment.member, assignment.capture.file)
+				) {
+					throw new Error(
+						`${assignment.capture.path} does not have an exact new Version identity.`,
+					);
+				}
+			}
+
+			const next = this.getRecords();
+			next[seriesIndex] = {
+				id: expectation.seriesId,
+				slots: slots
+					.map((slot) => ({
+						member: slot.member ? cloneMemberRecord(slot.member) : null,
+						version: slot.version,
+					}))
+					.sort((left, right) => left.version - right.version),
+			};
+			await this.commit(next);
+			return expectation.seriesId;
+		});
+	}
+
+	/**
+	 * Dissolve a fully resolved relationship under the same one-shot registry CAS
+	 * used for reorder/remove saves. Every captured member must still be the same
+	 * supported TFile at the same path and live ctime before the mapping is
+	 * forgotten. Any optional released-file move is authorized separately from a
+	 * complete CapturedFile snapshot.
+	 */
+	async dissolveResolvedSeriesManagement(
+		expectation: VersionManagementExpectation,
+	): Promise<void> {
+		return this.enqueue(async () => {
+			if (!this.managementExpectations.delete(expectation)) {
+				throw new Error('Version management authorization is no longer valid.');
+			}
+			if (expectation.purpose !== 'management') {
+				throw new Error('Version management authorization is invalid.');
+			}
+
+			this.assertExpectedRevision(expectation.revision);
+			this.assertExpectedSeries(expectation.seriesId, expectation.series);
+			this.index.rebuild(this.records);
+
+			const matchingIndexes = this.records.flatMap((record, index) =>
+				record.id === expectation.seriesId ? [index] : []);
+			if (matchingIndexes.length !== 1) {
+				throw new Error('Version series could not be resolved safely.');
+			}
+			const seriesIndex = matchingIndexes[0];
+			const series = this.records[seriesIndex];
+			this.assertResolvedSeriesExpectation(series, expectation);
+
+			const next = this.getRecords();
+			next.splice(seriesIndex, 1);
 			await this.commit(next);
 		});
 	}
@@ -168,9 +630,17 @@ export class VersionRegistry {
 	async saveSeriesSlots(
 		seriesId: string | null,
 		slots: VersionSlotRecord[],
+		expectedSeries?: VersionSeriesRecord | null,
+		expectedRevision?: number,
 	): Promise<string> {
 		return this.enqueue(async () => {
-			this.preflightSeriesSlots(seriesId, slots, true);
+			this.preflightSeriesSlots(
+				seriesId,
+				slots,
+				true,
+				expectedSeries,
+				expectedRevision,
+			);
 			this.assertMembersResolve(slots);
 			const next = this.getRecords();
 			const existingIndex = seriesId
@@ -201,38 +671,54 @@ export class VersionRegistry {
 		seriesId: string | null,
 		slots: VersionSlotRecord[],
 		requireIdentity = false,
+		expectedSeries?: VersionSeriesRecord | null,
+		expectedRevision?: number,
 	): void {
+		this.assertExpectedRevision(expectedRevision);
+		this.assertExpectedSeries(seriesId, expectedSeries);
 		validateSlots(slots, requireIdentity);
-		const existingIndex = seriesId
-			? this.records.findIndex((record) => record.id === seriesId)
-			: -1;
-		if (seriesId && existingIndex < 0) {
+		const matchingIndexes = seriesId
+			? this.records.flatMap((record, index) =>
+				record.id === seriesId ? [index] : [],
+			)
+			: [];
+		if (seriesId && matchingIndexes.length === 0) {
 			throw new Error('Version series no longer exists.');
 		}
-
-		const allowedPaths = new Set<string>();
-		if (existingIndex >= 0) {
-			for (const slot of this.records[existingIndex].slots) {
-				if (slot.member) {
-					allowedPaths.add(slot.member.path);
-				}
-			}
+		if (matchingIndexes.length > 1) {
+			throw new Error('Version series could not be resolved safely.');
 		}
+
+		// A repair may keep paths already owned by the one target relationship,
+		// including while that relationship is incomplete. It must never adopt a
+		// path that another relationship also owns, even if that overlap arrived
+		// through external sync while the management editor was open.
 		this.assertPathsAreUnmanaged(
-			slots.flatMap((slot) =>
-				slot.member && !allowedPaths.has(slot.member.path)
-					? [slot.member.path]
-					: [],
-			),
+			slots.flatMap((slot) => slot.member ? [slot.member.path] : []),
+			matchingIndexes[0],
 		);
 	}
 
-	async dissolveSeries(seriesId: string): Promise<void> {
+	async dissolveSeries(
+		seriesId: string,
+		expectedSeries?: VersionSeriesRecord | null,
+		expectedRevision?: number,
+	): Promise<void> {
 		return this.enqueue(async () => {
+			this.assertExpectedRevision(expectedRevision);
+			this.assertExpectedSeries(seriesId, expectedSeries);
 			const next = this.getRecords();
 			const matches = next.filter((record) => record.id === seriesId);
 			if (matches.length !== 1) {
 				throw new Error('Version series could not be resolved safely.');
+			}
+			// Explicit management repair may dissolve an already incomplete record
+			// without touching any user file. Legacy/direct callers still require a
+			// fully exact group; the revision token proves the repair editor saw the
+			// complete registry generation it is removing from.
+			if (expectedRevision === undefined) {
+				this.assertSeriesExactlyResolved(seriesId);
+				this.assertMembersResolve(matches[0].slots);
 			}
 			await this.commit(next.filter((record) => record.id !== seriesId));
 		});
@@ -246,8 +732,10 @@ export class VersionRegistry {
 	async releaseVersionMembers(
 		seriesId: string,
 		captures: VersionMemberRelease[],
+		expectedSeries?: VersionSeriesRecord | null,
 	): Promise<ReleaseVersionMembersResult> {
 		return this.enqueue(async () => {
+			this.assertExpectedSeries(seriesId, expectedSeries);
 			if (captures.length === 0) {
 				throw new Error('No version members were selected.');
 			}
@@ -278,6 +766,8 @@ export class VersionRegistry {
 				throw new Error('Version series no longer exists.');
 			}
 			const series = next[seriesIndex];
+			this.assertSeriesExactlyResolved(seriesId);
+			this.assertMembersResolve(series.slots);
 			for (const capture of captures) {
 				const slot = series.slots.find(
 					(candidate) => candidate.version === capture.version,
@@ -490,6 +980,7 @@ export class VersionRegistry {
 			const current = this.vault.getFileByPath(file.path);
 			if (
 				!current ||
+				current !== file ||
 				!isVersionableFile(current) ||
 				!memberMatchesFile(memberRecordFromFile(file), current)
 			) {
@@ -501,7 +992,7 @@ export class VersionRegistry {
 	private assertMembersResolve(slots: VersionSlotRecord[]): void {
 		for (const slot of slots) {
 			if (!slot.member) {
-				continue;
+				throw new Error(`V${slot.version} does not have a file.`);
 			}
 			const file = this.vault.getFileByPath(slot.member.path);
 			if (
@@ -516,12 +1007,55 @@ export class VersionRegistry {
 		}
 	}
 
-	private assertPathsAreUnmanaged(paths: string[]): void {
+	private assertResolvedSeriesExpectation(
+		series: VersionSeriesRecord,
+		expectation: ResolvedSeriesExpectation,
+	): void {
+		if (expectation.members.length !== series.slots.length) {
+			throw new Error('Version relationship authorization no longer matches the series.');
+		}
+		const expectedByVersion = new Map(
+			expectation.members.map((member) => [member.version, member] as const),
+		);
+		if (expectedByVersion.size !== expectation.members.length) {
+			throw new Error('Version relationship authorization is ambiguous.');
+		}
+
+		for (const slot of series.slots) {
+			if (!slot.member) {
+				throw new Error(`V${slot.version} does not have a file.`);
+			}
+			const expected = expectedByVersion.get(slot.version);
+			const live = expected
+				? this.vault.getFileByPath(expected.path)
+				: null;
+			if (
+				!expected ||
+				expected.path !== slot.member.path ||
+				expected.file.path !== expected.path ||
+				expected.file.stat.ctime !== expected.ctime ||
+				live !== expected.file ||
+				!isVersionableFile(expected.file) ||
+				!memberResolvesToFile(slot.member, expected.file)
+			) {
+				throw new Error(
+					`V${slot.version} changed or disappeared before the relationship was saved.`,
+				);
+			}
+		}
+	}
+
+	private assertPathsAreUnmanaged(
+		paths: string[],
+		allowedRecordIndex = -1,
+	): void {
 		const managedPaths = new Set(
-			this.records.flatMap((series) =>
-				series.slots.flatMap((slot) =>
-					slot.member ? [slot.member.path] : [],
-				),
+			this.records.flatMap((series, index) =>
+				index === allowedRecordIndex
+					? []
+					: series.slots.flatMap((slot) =>
+						slot.member ? [slot.member.path] : [],
+					),
 			),
 		);
 		for (const path of paths) {
@@ -531,10 +1065,53 @@ export class VersionRegistry {
 		}
 	}
 
+	private assertSeriesExactlyResolved(seriesId: string): void {
+		if (!this.resolveExactlyMatchedGroup(seriesId)) {
+			throw new Error(
+				'Version series changed or disappeared before the relationship was saved.',
+			);
+		}
+	}
+
+	private assertExpectedSeries(
+		seriesId: string | null,
+		expectedSeries: VersionSeriesRecord | null | undefined,
+	): void {
+		if (expectedSeries === undefined) {
+			return;
+		}
+		const matches = seriesId
+			? this.records.filter((record) => record.id === seriesId)
+			: [];
+		const current = matches.length === 1 ? matches[0] : null;
+		const unchanged =
+			(current === null && expectedSeries === null) ||
+			(current !== null &&
+				expectedSeries !== null &&
+				versionSeriesRecordsEqual([current], [expectedSeries]));
+		if (!unchanged) {
+			throw new Error(
+				'Version series changed while this editor was open. Reopen Version management.',
+			);
+		}
+	}
+
+	private assertExpectedRevision(expectedRevision: number | undefined): void {
+		if (
+			expectedRevision !== undefined &&
+			expectedRevision !== this.revision
+		) {
+			throw new Error(
+				'Version registry changed while this editor was open. Reopen Version management.',
+			);
+		}
+	}
+
 	private async commit(next: VersionSeriesRecord[]): Promise<void> {
 		await this.persistSeries(next);
 		this.records = cloneSeriesRecords(next);
 		this.index.rebuild(this.records);
+		this.revision += 1;
 	}
 
 	private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -586,6 +1163,25 @@ function validateSlots(
 	if (!versions.has(1)) {
 		throw new Error('A Version series must have V1.');
 	}
+}
+
+function cloneMemberRecord(member: VersionMemberRecord): VersionMemberRecord {
+	return {
+		identity: member.identity ? { ...member.identity } : undefined,
+		lastKnownName: member.lastKnownName,
+		path: member.path,
+	};
+}
+
+function memberRecordsEqual(
+	left: VersionMemberRecord,
+	right: VersionMemberRecord,
+): boolean {
+	return (
+		left.path === right.path &&
+		left.lastKnownName === right.lastKnownName &&
+		left.identity?.ctime === right.identity?.ctime
+	);
 }
 
 function createSeriesId(): string {

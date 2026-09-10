@@ -134,12 +134,13 @@ const EN = {
 	'manage.releaseCollision':
 		'Cannot remove {{name}} from the series: a file with the same name already exists in {{destination}}.',
 	'manage.releaseMoveFailed':
-		'The Version relationship was saved, but {{count}} files removed from the series could not be moved. They remain readable in their previous locations.',
+		'The Version relationship was saved, but {{count}} files removed from the series could not complete their move. They remain readable as ordinary files at their current locations.',
 	'manage.rollbackFailed':
 		'After the save failed, newly created blank files could not be removed ({{count}} total). They remain visible and readable.',
 	'manage.slotAria': 'Version {{version}} slot',
 	'manage.dragVersion': 'Drag to change this version relationship',
 	'manage.missing': 'Missing: {{name}}',
+	'manage.identityConflict': 'Identity conflict: {{name}}',
 	'manage.createdOnDone': 'Created only after you choose Done',
 	'manage.remove': 'Remove from this series',
 	'manage.move': 'Change version position',
@@ -150,13 +151,13 @@ const EN = {
 	'manage.keyboardMoved': 'Moved {{label}} to {{version}}.',
 	'manage.keyboardCancelled': 'Cancelled moving {{label}}.',
 	'manage.done': 'Done',
-	'manage.dissolve': 'Dissolve series',
-	'manage.dissolveConfirmTitle': 'Dissolve this version series?',
+	'manage.dissolve': 'Stop version management',
+	'manage.dissolveConfirmTitle': 'Stop managing this version series?',
 	'manage.dissolveConfirmDescription':
-		'Only V1 remains. This removes the Version relationship, but does not delete or modify any member files.',
+		'Only V1 remains. Continuing stops Version from managing this series. No files will be deleted or have their contents modified, but released files may be moved according to your Version settings.',
 	'manage.keepSeries': 'Keep series',
 	'manage.dissolved':
-		'Version relationship dissolved. No files were changed.',
+		'Version management stopped. No files were deleted or had their contents modified; released files may have been moved according to your Version settings.',
 	'manage.v1Required': 'Choose an existing file for V1.',
 	'manage.twoVersionsRequired':
 		'Add at least two files before creating a Version series.',
@@ -167,6 +168,8 @@ const EN = {
 		'This blank file has not been created yet. It will be created only after you choose Done.',
 	'manage.missingPreview':
 		'The registered file could not be found at {{path}}. Drag the correct file into this slot to repair it.',
+	'manage.identityConflictPreview':
+		'A file exists at {{path}}, but it is not the registered file identity. Drag that file into this slot only if you intend to repair this relationship.',
 	'manage.invalidName': 'The new filename is not valid.',
 	'manage.nameExists': '{{path}} already exists.',
 	'manage.saved': 'Version relationship saved.',
@@ -277,6 +280,8 @@ const EN = {
 		'The Version relationship could not be updated after the file moved or was renamed. All affected files remain visible. {{message}}',
 	'view.identityMigrationFailed':
 		'Version could not verify older member identities. Affected files remain visible; open Version management to repair the relationship. {{message}}',
+	'view.externalSettingsReloadFailed':
+		'Version could not finish reloading synchronized plugin data. Restart Obsidian after sync completes. {{message}}',
 	'view.seriesIncompleteAfterDelete':
 		'A version file was removed outside the Version safety dialog. The remaining files are visible. Restore the missing file or open Version management to repair the relationship.',
 	'view.deleteV1Warning':
@@ -406,12 +411,13 @@ const ZH: Record<TranslationKey, string> = {
 	'manage.releaseCollision':
 		'无法将“{{name}}”移至{{destination}}：那里已经存在同名文件。',
 	'manage.releaseMoveFailed':
-		'版本关系已经保存，但有 {{count}} 个移出的文件未能移动；它们仍可在原位置正常读取。',
+		'版本关系已经保存，但有 {{count}} 个移出的文件未能完成移动；它们仍作为普通文件保留，并可在当前位置正常读取。',
 	'manage.rollbackFailed':
 		'保存失败后，有 {{count}} 个新建的空白文件未能移除；它们仍然可见且可以正常读取。',
 	'manage.slotAria': '版本 {{version}} 槽位',
 	'manage.dragVersion': '拖动以调整版本关系',
 	'manage.missing': '缺失：{{name}}',
+	'manage.identityConflict': '身份冲突：{{name}}',
 	'manage.createdOnDone': '点击“完成”后才会创建',
 	'manage.remove': '从这个系列中移出',
 	'manage.move': '调整版本位置',
@@ -422,12 +428,13 @@ const ZH: Record<TranslationKey, string> = {
 	'manage.keyboardMoved': '已将 {{label}} 放到 {{version}}。',
 	'manage.keyboardCancelled': '已取消移动 {{label}}。',
 	'manage.done': '完成',
-	'manage.dissolve': '解散版本系列',
-	'manage.dissolveConfirmTitle': '要解散这个版本系列吗？',
+	'manage.dissolve': '停止版本管理',
+	'manage.dissolveConfirmTitle': '要停止管理这个版本系列吗？',
 	'manage.dissolveConfirmDescription':
-		'当前只剩 V1。继续将移除 Version 关系，但不会删除或修改任何成员文件。',
+		'当前只剩 V1。继续后，Version 将停止管理这个系列；不会删除任何文件，也不会修改文件内容，但释放后的文件可能会按照 Version 设置移动位置。',
 	'manage.keepSeries': '保留版本系列',
-	'manage.dissolved': '版本关系已解散；没有修改任何文件。',
+	'manage.dissolved':
+		'已停止版本管理。没有删除任何文件，也没有修改文件内容；释放后的文件可能已按照 Version 设置移动位置。',
 	'manage.v1Required': '必须为 V1 选择一个现有文件。',
 	'manage.twoVersionsRequired': '至少放入两个文件后才能创建版本系列。',
 	'manage.v1MoveRequired': '请先把另一个文件拖到 V1，再将原来的 V1 移出系列。',
@@ -435,6 +442,8 @@ const ZH: Record<TranslationKey, string> = {
 	'manage.pendingPreview': '这个空白文件尚未创建；只有点击“完成”后才会真正写入仓库。',
 	'manage.missingPreview':
 		'无法在 {{path}} 找到登记的文件。请把正确的文件拖到这个槽位进行修复。',
+	'manage.identityConflictPreview':
+		'{{path}} 处存在文件，但它与登记的文件身份不一致。只有确认要用这个文件修复关系时，才把它拖入此槽位。',
 	'manage.invalidName': '新文件的名称无效。',
 	'manage.nameExists': '{{path}} 已经存在。',
 	'manage.saved': '版本关系已保存。',
@@ -537,6 +546,8 @@ const ZH: Record<TranslationKey, string> = {
 		'文件移动或重命名后，Version 关系无法保存；受影响的文件将保持可见。{{message}}',
 	'view.identityMigrationFailed':
 		'Version 无法核验旧版成员身份；受影响的文件将保持可见。请打开版本管理修复关系。{{message}}',
+	'view.externalSettingsReloadFailed':
+		'Version 无法完成同步插件数据的重新加载。请在同步完成后重启 Obsidian。{{message}}',
 	'view.seriesIncompleteAfterDelete':
 		'有一个版本文件绕过 Version 的安全选择界面被移除。剩余文件已恢复为可见；请恢复缺失文件，或打开版本管理修复关系。',
 	'view.deleteV1Warning': '删除 V1 可能使已有的整体链接失效。',

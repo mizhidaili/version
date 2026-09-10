@@ -7,13 +7,22 @@ import {
 } from 'obsidian';
 import { VersionI18n } from '../i18n';
 import { mergeWithNoteComposer } from '../note-composer-compat';
-import { VersionGroup, VersionIndex } from '../version-index';
+import {
+	isVersionGroupExactlyResolved,
+	VersionGroup,
+	VersionIndex,
+} from '../version-index';
 import { VersionChoiceModal, renderThemeSuggestion } from './version-link-modal';
 import { VersionHoverPreview } from './hover-preview';
 
 type MergeTarget =
 	| { file: TFile; kind: 'file' }
 	| { group: VersionGroup; kind: 'group' };
+
+export interface VersionMergeFileExpectation {
+	seriesId: string | null;
+	version: number | null;
+}
 
 export class VersionMergeTargetModal extends FuzzySuggestModal<MergeTarget> {
 	private hoverPreview: VersionHoverPreview | null = null;
@@ -22,7 +31,12 @@ export class VersionMergeTargetModal extends FuzzySuggestModal<MergeTarget> {
 		app: App,
 		private readonly index: VersionIndex,
 		private readonly source: TFile,
+		private readonly sourceExpectation: VersionMergeFileExpectation,
 		private readonly i18n: VersionI18n,
+		private readonly canMerge: (
+			file: TFile,
+			expectation: VersionMergeFileExpectation,
+		) => boolean,
 		private readonly onMerged: () => void,
 	) {
 		super(app);
@@ -47,8 +61,9 @@ export class VersionMergeTargetModal extends FuzzySuggestModal<MergeTarget> {
 	}
 
 	getItems(): MergeTarget[] {
-		const groups = this.index.getGroups();
-		const healthyPaths = new Set(groups.flatMap((group) =>
+		const resolvedGroups = this.index.getGroups();
+		const groups = resolvedGroups.filter(isVersionGroupExactlyResolved);
+		const healthyPaths = new Set(resolvedGroups.flatMap((group) =>
 			group.versions.map((member) => member.path)));
 		const targets: MergeTarget[] = groups
 			.filter((group) => group.versions.some((member) =>
@@ -97,14 +112,20 @@ export class VersionMergeTargetModal extends FuzzySuggestModal<MergeTarget> {
 
 	onChooseItem(target: MergeTarget): void {
 		if (target.kind === 'file') {
-			void this.mergeInto(target.file);
+			void this.mergeInto(target.file, {
+				seriesId: null,
+				version: null,
+			});
 			return;
 		}
 
 		new VersionChoiceModal(
 			this.app,
 			target.group,
-			(choice) => void this.mergeInto(choice.file),
+			(choice) => void this.mergeInto(choice.file, {
+				seriesId: target.group.id,
+				version: choice.versionFile.version,
+			}),
 			this.i18n,
 			{
 				includeOverall: false,
@@ -129,7 +150,17 @@ export class VersionMergeTargetModal extends FuzzySuggestModal<MergeTarget> {
 			this.hoverPreview?.scheduleHide());
 	}
 
-	private async mergeInto(target: TFile): Promise<void> {
+	private async mergeInto(
+		target: TFile,
+		targetExpectation: VersionMergeFileExpectation,
+	): Promise<void> {
+		if (
+			!this.canMerge(this.source, this.sourceExpectation) ||
+			!this.canMerge(target, targetExpectation)
+		) {
+			new Notice(this.i18n.t('view.repairVersions'));
+			return;
+		}
 		try {
 			await mergeWithNoteComposer(this.app, target, this.source);
 			this.onMerged();

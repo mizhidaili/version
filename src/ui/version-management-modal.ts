@@ -13,16 +13,25 @@ import {
 	CreatedFileRollbackCandidate,
 	rollbackCreatedFilesIfUnchanged,
 } from '../created-file-rollback';
-import { captureFile } from '../captured-file';
 import {
-	memberMatchesFile,
+	type CapturedFile,
+	captureFile,
+	isCapturedFile,
+} from '../captured-file';
+import {
 	memberRecordFromFile,
+	memberResolvesToFile,
 	ReleasedVersionDestination,
 	VersionMemberRecord,
+	VersionSeriesRecord,
 	VersionSlotRecord,
 } from '../version-data';
 import { formatVersionFilename, MAX_VERSION } from '../version-index';
-import { VersionRegistry } from '../version-registry';
+import {
+	type VersionManagementExpectation,
+	type VersionManagementSlotAssignment,
+	VersionRegistry,
+} from '../version-registry';
 import {
 	getVersionableFiles,
 } from '../version-file-types';
@@ -66,6 +75,13 @@ export function trackPointerFocus(control: HTMLElement): void {
 interface ExistingAssignment {
 	file: TFile;
 	kind: 'existing';
+	registeredMember: VersionMemberRecord | null;
+}
+
+interface IdentityConflictAssignment {
+	file: TFile;
+	kind: 'identity-conflict';
+	member: VersionMemberRecord;
 }
 
 interface MissingAssignment {
@@ -81,6 +97,7 @@ interface NewAssignment {
 
 type DraftAssignment =
 	| ExistingAssignment
+	| IdentityConflictAssignment
 	| MissingAssignment
 	| NewAssignment;
 
@@ -110,6 +127,7 @@ interface FileTreeNode {
 }
 
 interface ReleasedMovePlan {
+	capture: CapturedFile;
 	file: TFile;
 	from: string;
 	to: string;
@@ -148,10 +166,15 @@ export class VersionManagementModal extends Modal {
 	private filterInput!: HTMLInputElement;
 	private readonly openFolders = new Set<string>();
 	private readonly clearedAssignments = new Map<number, DraftAssignment>();
-	private readonly releasedByDeletedVersion = new Set<TFile>();
+	private readonly releasedByDeletedVersion = new Map<TFile, CapturedFile>();
 	private scrollRestoreRaf: number | null = null;
 	private hoverPreview!: VersionHoverPreview;
 	private readonly currentSeriesFolder: string | null;
+	private readonly initialSeriesRecord: VersionSeriesRecord | null;
+	private readonly initialRegistryRevision: number;
+	private readonly managementExpectation: VersionManagementExpectation | null;
+	private readonly registeredMembersByFile =
+		new Map<TFile, VersionMemberRecord | null>();
 	private slotsEl!: HTMLElement;
 	private submitting = false;
 
@@ -166,12 +189,17 @@ export class VersionManagementModal extends Modal {
 		seriesIdOverride: string | null = null,
 	) {
 		super(app);
+		// TFile metadata can settle after iCloud hydration without a create,
+		// delete, or rename event. Resolve the modal from one fresh index snapshot
+		// instead of combining a cached group status with newer live file stats.
+		registry.rebuild();
 		this.defaultNewFormat = currentFile
 			? detectVersionFileFormat(currentFile) ?? 'markdown'
 			: 'markdown';
 		// The parent keeps Modal's native Escape-to-close shortcut. This child
 		// scope lets an active keyboard drag consume Escape before it reaches it.
 		this.scope = new Scope(this.scope);
+		this.initialRegistryRevision = registry.getRevision();
 		const records = registry.getRecords();
 		const indexedGroup = currentFile
 			? registry.index.getGroupForFile(currentFile)
@@ -187,8 +215,13 @@ export class VersionManagementModal extends Modal {
 				record.slots.some((slot) => slot.member?.path === currentFile.path),
 			) : [];
 		const record = matchingRecords.length === 1 ? matchingRecords[0] : null;
+		this.initialSeriesRecord = record;
+		this.managementExpectation = record
+			? registry.captureManagementExpectation(record.id)
+			: null;
 		this.initialMemberPath = record && currentFile && record.slots.some((slot) =>
-			slot.member && memberMatchesFile(slot.member, currentFile),
+			slot.member?.path === currentFile.path &&
+			memberResolvesToFile(slot.member, currentFile),
 		)
 			? currentFile.path
 			: null;
@@ -203,10 +236,18 @@ export class VersionManagementModal extends Modal {
 			addFolderAncestors(this.openFolders, this.currentSeriesFolder);
 		}
 		this.slots = record
-			? buildDraftSlots(this.app, record.slots)
+			? buildDraftSlots(
+				this.app,
+				record.slots,
+				this.registeredMembersByFile,
+			)
 			: [{
 				assignment: currentFile
-					? { file: currentFile, kind: 'existing' }
+					? {
+							file: currentFile,
+							kind: 'existing',
+							registeredMember: null,
+						}
 					: null,
 				version: 1,
 			}];
@@ -758,6 +799,14 @@ export class VersionManagementModal extends Modal {
 			});
 			return nameEl;
 		}
+		if (assignment.kind === 'identity-conflict') {
+			return container.createDiv({
+				cls: 'version-management-slot-name is-identity-conflict version-management-preview-trigger',
+				text: this.i18n.t('manage.identityConflict', {
+					name: assignment.file.name,
+				}),
+			});
+		}
 
 		const fields = container.createDiv({
 			cls: 'version-management-new-fields',
@@ -803,7 +852,12 @@ export class VersionManagementModal extends Modal {
 			return;
 		}
 		if (source.kind === 'file') {
-			target.assignment = { file: source.file, kind: 'existing' };
+			target.assignment = {
+				file: source.file,
+				kind: 'existing',
+				registeredMember:
+					this.registeredMembersByFile.get(source.file) ?? null,
+			};
 		} else {
 			const sourceSlot = this.slots.find((slot) => slot.version === source.version);
 			if (!sourceSlot || sourceSlot === target) {
@@ -845,7 +899,10 @@ export class VersionManagementModal extends Modal {
 			this.clearedAssignments.get(version) ?? null;
 		this.clearedAssignments.delete(version);
 		if (releasedAssignment?.kind === 'existing') {
-			this.releasedByDeletedVersion.add(releasedAssignment.file);
+			this.releasedByDeletedVersion.set(
+				releasedAssignment.file,
+				captureFile(releasedAssignment.file),
+			);
 		}
 		this.renderAll();
 	}
@@ -906,6 +963,14 @@ export class VersionManagementModal extends Modal {
 		return assignment?.kind === 'existing' ? assignment.file : null;
 	}
 
+	private memberForExistingAssignment(
+		assignment: ExistingAssignment,
+	): VersionMemberRecord {
+		return assignment.registeredMember
+			? cloneDraftMember(assignment.registeredMember)
+			: memberRecordFromFile(assignment.file);
+	}
+
 	private pathForNewFile(
 		name: string,
 		format: VersionFileFormat,
@@ -949,6 +1014,16 @@ export class VersionManagementModal extends Modal {
 			this.hoverPreview.schedulePlaceholder(
 				`${this.versionLabel(version)} · ${assignment.member.lastKnownName}`,
 				this.i18n.t('manage.missingPreview', {
+					path: assignment.member.path,
+				}),
+				anchorEl,
+			);
+			return;
+		}
+		if (assignment.kind === 'identity-conflict') {
+			this.hoverPreview.schedulePlaceholder(
+				`${this.versionLabel(version)} · ${assignment.file.name}`,
+				this.i18n.t('manage.identityConflictPreview', {
 					path: assignment.member.path,
 				}),
 				anchorEl,
@@ -1481,10 +1556,13 @@ export class VersionManagementModal extends Modal {
 						};
 					}
 					const member = assignment.kind === 'existing'
-						? memberRecordFromFile(assignment.file)
+						? this.memberForExistingAssignment(assignment)
 						: { ...assignment.member };
 					return { member, version: slot.version };
 				}),
+				false,
+				this.initialSeriesRecord,
+				this.initialRegistryRevision,
 			);
 
 			for (const plan of pendingPlans) {
@@ -1501,7 +1579,11 @@ export class VersionManagementModal extends Modal {
 					capture: captureFile(file),
 					expectedContent: plan.prepared.content,
 				});
-				plan.slot.assignment = { file, kind: 'existing' };
+				plan.slot.assignment = {
+					file,
+					kind: 'existing',
+					registeredMember: null,
+				};
 			}
 
 			const finalSlots = this.slots.map((slot): VersionSlotRecord => {
@@ -1512,11 +1594,38 @@ export class VersionManagementModal extends Modal {
 					}));
 				}
 				const member = assignment.kind === 'existing'
-					? memberRecordFromFile(assignment.file)
+					? this.memberForExistingAssignment(assignment)
 					: { ...assignment.member };
 				return { member, version: slot.version };
 			});
-			await this.registry.saveSeriesSlots(this.seriesId, finalSlots);
+			if (this.managementExpectation) {
+				const assignments = this.slots.map(
+					(slot): VersionManagementSlotAssignment => {
+						const assignment = slot.assignment;
+						if (!assignment || assignment.kind !== 'existing') {
+							throw new Error(this.i18n.t('manage.unassignedVersion', {
+								version: slot.version,
+							}));
+						}
+						return {
+							file: assignment.file,
+							member: this.memberForExistingAssignment(assignment),
+							version: slot.version,
+						};
+					},
+				);
+				await this.registry.saveResolvedSeriesManagement(
+					this.managementExpectation,
+					assignments,
+				);
+			} else {
+				await this.registry.saveSeriesSlots(
+					this.seriesId,
+					finalSlots,
+					this.initialSeriesRecord,
+					this.initialRegistryRevision,
+				);
+			}
 			relationshipSaved = true;
 			const failedReleasedMoves = await this.moveReleasedNotes(releasedMoves);
 			this.onSaved();
@@ -1574,7 +1683,17 @@ export class VersionManagementModal extends Modal {
 		this.renderAll();
 		try {
 			const releasedMoves = this.planReleasedMoves(v1, new Set());
-			await this.registry.dissolveSeries(this.seriesId);
+			if (this.managementExpectation) {
+				await this.registry.dissolveResolvedSeriesManagement(
+					this.managementExpectation,
+				);
+			} else {
+				await this.registry.dissolveSeries(
+					this.seriesId,
+					this.initialSeriesRecord,
+					this.initialRegistryRevision,
+				);
+			}
 			const failedReleasedMoves = await this.moveReleasedNotes(releasedMoves);
 			this.onSaved();
 			new Notice(this.i18n.t('manage.dissolved'));
@@ -1613,10 +1732,15 @@ export class VersionManagementModal extends Modal {
 			this.i18n.t('move.rootDestination');
 		const plans: ReleasedMovePlan[] = [];
 
-		for (const file of this.releasedByDeletedVersion) {
+		for (const [file, capture] of this.releasedByDeletedVersion) {
+			const capturedPath = capture.path;
 			if (
 				assignedFiles.has(file) ||
-				this.app.vault.getFileByPath(file.path) !== file
+				!isCapturedFile(
+					this.app.vault.getFileByPath(capturedPath),
+					capture,
+				) ||
+				this.isPathManagedOutsideCurrentSeries(capturedPath)
 			) {
 				continue;
 			}
@@ -1625,10 +1749,10 @@ export class VersionManagementModal extends Modal {
 					? `${destinationFolder}/${file.name}`
 					: file.name,
 			);
-			if (to === file.path) {
+			if (to === capturedPath) {
 				continue;
 			}
-			plans.push({ file, from: file.path, to });
+			plans.push({ capture, file, from: capturedPath, to });
 		}
 
 		const targetCounts = new Map<string, number>();
@@ -1639,7 +1763,8 @@ export class VersionManagementModal extends Modal {
 			if (
 				reservedPaths.has(plan.to) ||
 				(targetCounts.get(plan.to) ?? 0) > 1 ||
-				this.app.vault.getAbstractFileByPath(plan.to)
+				this.app.vault.getAbstractFileByPath(plan.to) ||
+				this.isRegisteredPath(plan.to)
 			) {
 				throw new Error(this.i18n.t('manage.releaseCollision', {
 					destination: destinationLabel,
@@ -1651,25 +1776,74 @@ export class VersionManagementModal extends Modal {
 	}
 
 	private async moveReleasedNotes(plans: ReleasedMovePlan[]): Promise<number> {
+		// A repaired relationship can overlap another synchronized relationship.
+		// Once the save removes this series' claim, any path still registered by a
+		// survivor must remain exactly where it is.
+		const movable = plans.filter((plan) => !this.isRegisteredPath(plan.from));
+		if (movable.length === 0) {
+			return 0;
+		}
+		const expectedRevision = this.registry.getRevision();
 		const completed: ReleasedMovePlan[] = [];
 		try {
-			for (const plan of plans) {
+			for (const plan of movable) {
+				if (
+					this.registry.getRevision() !== expectedRevision ||
+					this.isRegisteredPath(plan.from) ||
+					!isCapturedFile(
+						this.app.vault.getFileByPath(plan.from),
+						plan.capture,
+					) ||
+					this.app.vault.getAbstractFileByPath(plan.to) ||
+					this.isRegisteredPath(plan.to)
+				) {
+					throw new Error('A released Version file changed before it moved.');
+				}
 				await this.app.fileManager.renameFile(plan.file, plan.to);
 				completed.push(plan);
+				if (
+					!isCapturedFile(
+						this.app.vault.getFileByPath(plan.to),
+						{ ...plan.capture, path: plan.to },
+					) ||
+					this.registry.getRevision() !== expectedRevision
+				) {
+					throw new Error('A released Version file changed while it moved.');
+				}
 			}
 			return 0;
 		} catch {
 			for (const plan of completed.reverse()) {
 				try {
-					if (!this.app.vault.getAbstractFileByPath(plan.from)) {
+					if (
+						this.registry.getRevision() === expectedRevision &&
+						isCapturedFile(
+							this.app.vault.getFileByPath(plan.to),
+							{ ...plan.capture, path: plan.to },
+						) &&
+						!this.isRegisteredPath(plan.to) &&
+						!this.app.vault.getAbstractFileByPath(plan.from)
+					) {
 						await this.app.fileManager.renameFile(plan.file, plan.from);
 					}
 				} catch {
 					// Every released note remains a normal file even if rollback fails.
 				}
 			}
-			return plans.length;
+			return movable.length;
 		}
+	}
+
+	private isRegisteredPath(path: string): boolean {
+		return this.registry.getRecords().some((record) =>
+			record.slots.some((slot) => slot.member?.path === path));
+	}
+
+	private isPathManagedOutsideCurrentSeries(path: string): boolean {
+		const owners = this.registry.getRecords().filter((record) =>
+			record.slots.some((slot) => slot.member?.path === path));
+		return owners.some((record) => record.id !== this.seriesId) ||
+			owners.filter((record) => record.id === this.seriesId).length > 1;
 	}
 }
 
@@ -1715,6 +1889,7 @@ class DissolveSeriesConfirmModal extends Modal {
 function buildDraftSlots(
 	app: App,
 	recordSlots: Array<{ member: VersionMemberRecord | null; version: number }>,
+	registeredMembersByFile: Map<TFile, VersionMemberRecord | null>,
 ): DraftSlot[] {
 	const validSlots = recordSlots.filter(
 		(slot) =>
@@ -1729,13 +1904,57 @@ function buildDraftSlots(
 			throw new Error('Filtered Version member unexpectedly became empty.');
 		}
 		const file = app.vault.getFileByPath(member.path);
+		const resolves = file && memberResolvesToFile(member, file);
+		if (file && resolves) {
+			const registeredMember = cloneDraftMember(member);
+			const existing = registeredMembersByFile.get(file);
+			if (!registeredMembersByFile.has(file)) {
+				registeredMembersByFile.set(file, registeredMember);
+			} else if (
+				!existing ||
+				!draftMembersEqual(existing, registeredMember)
+			) {
+				registeredMembersByFile.set(file, null);
+			}
+			return {
+				assignment: {
+					file,
+					kind: 'existing',
+					registeredMember,
+				},
+				version: stored.version,
+			};
+		}
 		return {
-			assignment: file && memberMatchesFile(member, file)
-				? { file, kind: 'existing' }
-				: { kind: 'missing', member: { ...member } },
+			assignment: file
+				? {
+						file,
+						kind: 'identity-conflict',
+						member: cloneDraftMember(member),
+					}
+				: { kind: 'missing', member: cloneDraftMember(member) },
 			version: stored.version,
 		};
 	});
+}
+
+function cloneDraftMember(member: VersionMemberRecord): VersionMemberRecord {
+	return {
+		identity: member.identity ? { ...member.identity } : undefined,
+		lastKnownName: member.lastKnownName,
+		path: member.path,
+	};
+}
+
+function draftMembersEqual(
+	left: VersionMemberRecord,
+	right: VersionMemberRecord,
+): boolean {
+	return (
+		left.path === right.path &&
+		left.lastKnownName === right.lastKnownName &&
+		left.identity?.ctime === right.identity?.ctime
+	);
 }
 
 function buildFileTree(files: TFile[], folders: TFolder[]): FileTreeNode {
@@ -1782,7 +2001,10 @@ function assignmentLabel(assignment: DraftAssignment): string {
 	if (assignment.kind === 'existing') {
 		return assignment.file.name;
 	}
-	if (assignment.kind === 'missing') {
+	if (
+		assignment.kind === 'missing' ||
+		assignment.kind === 'identity-conflict'
+	) {
 		return assignment.member.lastKnownName;
 	}
 	return assignment.name;

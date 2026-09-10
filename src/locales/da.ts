@@ -126,12 +126,13 @@ export const DA: Record<TranslationKey, string> = {
 	'manage.releaseCollision':
 		'{{name}} kan ikke fjernes fra serien og flyttes til {{destination}}, fordi en fil med samme navn allerede findes.',
 	'manage.releaseMoveFailed':
-		'Versionsrelationen blev gemt, men filer, der blev fjernet fra serien, kunne ikke flyttes ({{count}} i alt). De kan stadig læses på deres tidligere placeringer.',
+		'Versionsrelationen blev gemt, men flytningen kunne ikke fuldføres for filer, der blev fjernet fra serien ({{count}} i alt). De kan stadig læses som almindelige filer på deres nuværende placeringer.',
 	'manage.rollbackFailed':
 		'Nyoprettede tomme filer kunne ikke fjernes efter den mislykkede lagring ({{count}} i alt). De er stadig synlige og læsbare.',
 	'manage.slotAria': 'Plads til version {{version}}',
 	'manage.dragVersion': 'Træk for at ændre versionsrelationen',
 	'manage.missing': 'Mangler: {{name}}',
+	'manage.identityConflict': 'Identitetskonflikt: {{name}}',
 	'manage.createdOnDone': 'Oprettes først, når du vælger Færdig',
 	'manage.remove': 'Fjern fra serien',
 	'manage.move': 'Skift versionsplacering',
@@ -142,13 +143,13 @@ export const DA: Record<TranslationKey, string> = {
 	'manage.keyboardMoved': '{{label}} blev flyttet til {{version}}.',
 	'manage.keyboardCancelled': 'Flytning af {{label}} blev annulleret.',
 	'manage.done': 'Færdig',
-	'manage.dissolve': 'Opløs serien',
-	'manage.dissolveConfirmTitle': 'Opløs denne versionsserie?',
+	'manage.dissolve': 'Stop versionsstyring',
+	'manage.dissolveConfirmTitle': 'Stop versionsstyringen for denne serie?',
 	'manage.dissolveConfirmDescription':
-		'Kun V1 er tilbage. Dette fjerner versionsrelationen, men sletter eller ændrer ingen medlemsfiler.',
+		'Kun V1 er tilbage. Hvis du fortsætter, stopper Version med at administrere serien. Ingen filer slettes, og filindholdet ændres ikke, men filer, der frigives fra versionsstyringen, kan blive flyttet i henhold til dine Version-indstillinger.',
 	'manage.keepSeries': 'Behold serien',
 	'manage.dissolved':
-		'Versionsrelationen blev opløst. Ingen filer blev ændret.',
+		'Versionsstyringen er stoppet. Ingen filer blev slettet, og filindholdet blev ikke ændret; filer, der er frigivet fra versionsstyringen, kan være blevet flyttet i henhold til dine Version-indstillinger.',
 	'manage.v1Required': 'Vælg en eksisterende fil til V1.',
 	'manage.twoVersionsRequired':
 		'Tilføj mindst to filer, før du opretter en versionsserie.',
@@ -159,6 +160,8 @@ export const DA: Record<TranslationKey, string> = {
 		'Den tomme fil er ikke oprettet endnu. Den oprettes først, når du vælger Færdig.',
 	'manage.missingPreview':
 		'Den registrerede fil blev ikke fundet på {{path}}. Træk den rigtige fil til pladsen for at reparere relationen.',
+	'manage.identityConflictPreview':
+		'Der findes en fil på {{path}}, men dens identitet svarer ikke til den registrerede fil. Træk kun filen til denne plads, hvis du vil reparere relationen med den.',
 	'manage.invalidName': 'Det nye filnavn er ugyldigt.',
 	'manage.nameExists': '{{path}} findes allerede.',
 	'manage.saved': 'Versionsrelationen blev gemt.',
@@ -269,6 +272,8 @@ export const DA: Record<TranslationKey, string> = {
 		'Versionsrelationen kunne ikke opdateres, efter filen blev flyttet eller omdøbt. Alle berørte filer er stadig synlige. {{message}}',
 	'view.identityMigrationFailed':
 		'Version kunne ikke kontrollere identiteten på ældre medlemsfiler. De berørte filer forbliver synlige; åbn versionsstyringen for at reparere relationen. {{message}}',
+	'view.externalSettingsReloadFailed':
+		'Version kunne ikke genindlæse synkroniserede plugindata. Genstart Obsidian, når synkroniseringen er færdig. {{message}}',
 	'view.seriesIncompleteAfterDelete':
 		'En versionsfil blev fjernet uden om sikkerhedsdialogen i Version. De resterende filer er synlige. Gendan den manglende fil, eller åbn versionsstyringen for at reparere relationen.',
 	'view.deleteV1Warning':

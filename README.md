@@ -40,16 +40,16 @@ Multi-Version Notes runs locally. It does not upload vault contents, collect tel
 ### Basic use
 
 1. Open an ordinary supported file.
-2. Choose **Create versions for this note…**.
-3. Add an existing file or create an empty version in the version manager.
-4. Select **Done** to save the staged relationship.
-5. Use the version tabs at the right edge to switch versions.
+2. Use the **+** action to open the quick-create dialog for V2, then choose its filename and Markdown, Canvas, or Excalidraw format.
+3. After the first version relationship exists, use **Version management** to add existing files, stage new files, remove assignments, or rearrange version numbers.
+4. Select **Done** to commit staged management changes, or **Cancel** to leave files and relationships unchanged.
+5. The **+** action remains available for creating another version, while the tabs at the right edge switch between existing versions.
 
 V1 represents a healthy series in the File Explorer, but it is not more correct, more final, or less editable than another version.
 
 ### Installation
 
-After Multi-Version Notes is accepted into the Obsidian Community Plugins directory, install it from **Settings → Community plugins**.
+Install Multi-Version Notes from **Settings → Community plugins** by searching for its name and selecting **Install**, then **Enable**.
 
 For manual installation, place these files in `<your-vault>/.obsidian/plugins/version/` and enable **Multi-Version Notes**:
 
@@ -68,6 +68,10 @@ Multi-Version Notes is not marked as desktop-only. Desktop-only file actions are
 ### Privacy
 
 Multi-Version Notes makes no network requests, uploads no vault content, and collects no telemetry.
+
+### Support
+
+Report reproducible problems through [GitHub Issues](https://github.com/mizhidaili/version/issues). Before reporting a relationship problem, avoid deleting or renaming affected files and include the Obsidian, platform, and Multi-Version Notes versions you used.
 
 ### License
 
@@ -113,16 +117,16 @@ Multi-Version Notes 完全在本地运行，不上传仓库内容，不收集遥
 ### 基本使用方法
 
 1. 打开一篇普通的受支持文件。
-2. 选择“为这篇笔记创建版本…”。
-3. 在版本管理界面接纳已有文件，或创建一个空白版本。
-4. 点击“完成”，保存暂存的版本关系。
-5. 使用编辑区右缘的版本页签切换不同版本。
+2. 点击“+”，在快捷创建窗口中设置 V2 的文件名，并选择 Markdown、Canvas 或 Excalidraw 格式。
+3. 首个版本关系建立后，可以进入“版本管理”，接纳已有文件、暂存新文件、移除分配或调整版本编号。
+4. 点击“完成”提交暂存的管理操作；点击“取消”则不改变文件与版本关系。
+5. “+”会一直保留，用于继续快捷创建版本；编辑区右缘的版本页签用于切换已有版本。
 
 V1 是健康系列在文件列表中的代表，但它并不比其他版本更正确、更正式，也同样可以继续编辑。
 
 ### 安装
 
-Multi-Version Notes 被 Obsidian 社区插件目录收录后，可以前往“设置 → 第三方插件”搜索并安装。
+前往“设置 → 第三方插件”，搜索 **Multi-Version Notes**，依次点击“安装”和“启用”。
 
 手动安装时，请把以下文件放入 `<你的仓库>/.obsidian/plugins/version/`，然后启用 **Multi-Version Notes**：
 
@@ -141,6 +145,10 @@ Multi-Version Notes 没有被标记为仅限桌面端。只能在桌面端使用
 ### 隐私
 
 Multi-Version Notes 不发起网络请求，不上传仓库内容，也不收集遥测数据。
+
+### 支持
+
+如果遇到可以复现的问题，请通过 [GitHub Issues](https://github.com/mizhidaili/version/issues) 反馈。版本关系出现异常时，请先不要删除或重命名相关文件，并注明所用的 Obsidian、操作系统和 Multi-Version Notes 版本。
 
 ### 许可证
 

@@ -17,7 +17,9 @@ export interface PlannedSeriesDestination {
 }
 
 export interface SeriesMoveEnvironment {
+	canRollback?: (plan: SeriesMovePlan) => boolean;
 	getAbstractFileByPath: (path: string) => unknown;
+	isPathRegistered?: (path: string) => boolean;
 	renameFile: (
 		file: TFile,
 		from: string,
@@ -53,10 +55,15 @@ export async function executeSeriesMove(
 	const completed = plans.filter((plan) => plan.alreadyMoved);
 	try {
 		validateMoveStart(record, plansByPath);
-		const collisionCount = countSeriesMoveCollisions(
+		let collisionCount = countSeriesMoveCollisions(
 			plans,
 			environment.getAbstractFileByPath,
 		);
+		if (collisionCount === 0) {
+			collisionCount = plans.filter((plan) =>
+				plan.from !== plan.to && environment.isPathRegistered?.(plan.to),
+			).length;
+		}
 		if (collisionCount > 0) {
 			throw new SeriesMoveError(
 				`${collisionCount} destination file(s) already exist.`,
@@ -68,6 +75,13 @@ export async function executeSeriesMove(
 		for (const plan of plans) {
 			if (plan.alreadyMoved || plan.from === plan.to) {
 				continue;
+			}
+			if (environment.isPathRegistered?.(plan.to)) {
+				throw new SeriesMoveError(
+					'The destination path is already registered by another Version series.',
+					'collision',
+					1,
+				);
 			}
 			await environment.renameFile(plan.file, plan.from, plan.to, false);
 			completed.push(plan);
@@ -147,7 +161,7 @@ export async function rollbackSeriesMoves(
 	plans: SeriesMovePlan[],
 	environment: Pick<
 		SeriesMoveEnvironment,
-		'getAbstractFileByPath' | 'renameFile'
+		'canRollback' | 'getAbstractFileByPath' | 'renameFile'
 	>,
 ): Promise<number> {
 	let failures = 0;
@@ -156,6 +170,7 @@ export async function rollbackSeriesMoves(
 			continue;
 		}
 		if (
+			(environment.canRollback && !environment.canRollback(plan)) ||
 			plan.file.path !== plan.to ||
 			environment.getAbstractFileByPath(plan.from)
 		) {

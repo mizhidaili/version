@@ -47,6 +47,7 @@ export class VersionFileActionsModal extends Modal {
 		private readonly onManage: (file: TFile) => void,
 		private readonly onMoveSeries: () => void,
 		private readonly onMerge: (file: TFile) => void,
+		private readonly canMutate: (file: TFile, version: number) => boolean,
 		private readonly i18n: VersionI18n,
 	) {
 		super(app);
@@ -173,6 +174,9 @@ export class VersionFileActionsModal extends Modal {
 		}
 		if (this.selected.file.extension.toLocaleLowerCase() === 'md') {
 			this.addAction('merge.action', () => {
+				if (!this.requireCurrentExactMember()) {
+					return;
+				}
 				const file = this.selected.file;
 				this.close();
 				this.onMerge(file);
@@ -447,6 +451,9 @@ export class VersionFileActionsModal extends Modal {
 		if (!action.run || action.disabled) {
 			return;
 		}
+		if (!this.requireCurrentExactMember()) {
+			return;
+		}
 		try {
 			this.close();
 			await Promise.resolve(action.run(event));
@@ -494,22 +501,41 @@ export class VersionFileActionsModal extends Modal {
 	}
 
 	private moveSelected(): void {
+		if (!this.requireCurrentExactMember()) {
+			return;
+		}
 		new MoveSingleVersionModal(
 			this.app,
 			this.selected.file,
+			this.selected.version,
+			this.canMutate,
 			() => this.close(),
 			this.i18n,
 		).open();
 	}
 
 	private renameSelected(): void {
+		if (!this.requireCurrentExactMember()) {
+			return;
+		}
 		new RenameVersionFileModal(
 			this.app,
 			this.selected.file,
+			this.selected.version,
 			this.selected.version === 1,
+			this.canMutate,
 			() => this.close(),
 			this.i18n,
 		).open();
+	}
+
+	private requireCurrentExactMember(): boolean {
+		if (this.canMutate(this.selected.file, this.selected.version)) {
+			return true;
+		}
+		new Notice(this.i18n.t('view.repairVersions'));
+		this.close();
+		return false;
 	}
 
 	private async copyPath(): Promise<void> {
@@ -564,7 +590,9 @@ class RenameVersionFileModal extends Modal {
 	constructor(
 		app: App,
 		private readonly file: TFile,
+		private readonly version: number,
 		private readonly renameTopic: boolean,
+		private readonly canMutate: (file: TFile, version: number) => boolean,
 		private readonly onRenamed: () => void,
 		private readonly i18n: VersionI18n,
 	) {
@@ -610,6 +638,11 @@ class RenameVersionFileModal extends Modal {
 			new Notice(this.i18n.t('view.createExists', { path }));
 			return;
 		}
+		if (!this.canMutate(this.file, this.version)) {
+			new Notice(this.i18n.t('view.repairVersions'));
+			this.close();
+			return;
+		}
 		try {
 			await this.app.fileManager.renameFile(this.file, path);
 			this.onRenamed();
@@ -626,6 +659,8 @@ class MoveSingleVersionModal extends FuzzySuggestModal<TFolder> {
 	constructor(
 		app: App,
 		private readonly file: TFile,
+		private readonly version: number,
+		private readonly canMutate: (file: TFile, version: number) => boolean,
 		private readonly onMoved: () => void,
 		private readonly i18n: VersionI18n,
 	) {
@@ -661,6 +696,10 @@ class MoveSingleVersionModal extends FuzzySuggestModal<TFolder> {
 		}
 		if (this.app.vault.getAbstractFileByPath(path)) {
 			new Notice(this.i18n.t('view.createExists', { path }));
+			return;
+		}
+		if (!this.canMutate(this.file, this.version)) {
+			new Notice(this.i18n.t('view.repairVersions'));
 			return;
 		}
 		try {

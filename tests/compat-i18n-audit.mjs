@@ -71,6 +71,7 @@ assert.deepEqual(
 const fileTypes = readPlugin('src/version-file-types.ts');
 assert.match(fileTypes, /new Set\(\['canvas', 'excalidraw', 'md'\]\)/u);
 const viewDecorator = readPlugin('src/ui/version-view-decorator.ts');
+const createVersionModal = readPlugin('src/ui/create-version-modal.ts');
 assert.match(viewDecorator, /viewType === 'canvas'/u);
 assert.match(viewDecorator, /includes\('excalidraw'\)/u);
 assert.match(
@@ -105,6 +106,26 @@ assert.match(
 );
 assert.match(
 	viewDecorator,
+	/openInitialVersionModalForFile\(file: TFile\)[\s\S]*?this\.isLiveUnregisteredFile\(file\)[\s\S]*?this\.findOpenFileView\(file\)[\s\S]*?this\.openInitialVersionModal\(openView\)[\s\S]*?this\.openFileThenInitialVersionModal\(file\)/u,
+	'File-menu quick-create must reuse an open editable file view or safely open the real file first',
+);
+assert.match(
+	viewDecorator,
+	/private async createInitialVersion[\s\S]*?if \(!this\.isLiveUnregisteredFile\(v1\)\)[\s\S]*?return false;[\s\S]*?createAndRegisterVersionFile/u,
+	'Quick-create submit must reject a stale menu or modal before creating any file',
+);
+assert.match(
+	viewDecorator,
+	/private async openFileThenInitialVersionModal[\s\S]*?isLiveUnregisteredFile\(file\)[\s\S]*?await leaf\.openFile\(file[\s\S]*?isLiveUnregisteredFile\(file\)[\s\S]*?leaf\.view instanceof FileView[\s\S]*?leaf\.view\.file === file[\s\S]*?isEditableVersionViewType\(leaf\.view\.getViewType\(\)\)/u,
+	'File-menu fallback must re-check an unmanaged file after opening the exact editable FileView',
+);
+assert.match(
+	createVersionModal,
+	/setButtonText\(this\.i18n\.t\('common\.cancel'\)\)[\s\S]*?\.onClick\(\(\) => this\.close\(\)\)[\s\S]*?setButtonText\(this\.i18n\.t\('create\.confirm'/u,
+	'Cancelling quick-create must only close the modal; creation remains behind the explicit confirm button',
+);
+assert.match(
+	viewDecorator,
 	/private async createInitialVersion[\s\S]*?createAndRegisterVersionFile\([\s\S]*?this\.registry\.createSeries\(v1, file\)[\s\S]*?view\.leaf\.openFile/u,
 	'Initial quick-create must use the shared file transaction and commit a real V1/V2 registry relationship before opening V2',
 );
@@ -115,8 +136,8 @@ assert.match(
 );
 assert.match(
 	viewDecorator,
-	/const openLabel = this\.i18n\.t\('view\.openVersionAria'[\s\S]*?const tooltip = `[\s\S]*?view\.versionActions[\s\S]*?setTooltip\(button, tooltip, \{ placement: 'left' \}\)/u,
-	'Each concrete version button must use one Obsidian tooltip with open and context-action guidance',
+	/const openLabel = this\.i18n\.t\('view\.openVersionAria'[\s\S]*?const tooltip = isVersionGroupExactlyResolved\(group\)[\s\S]*?view\.versionActions[\s\S]*?: openLabel;[\s\S]*?setTooltip\(button, tooltip, \{ placement: 'left' \}\)/u,
+	'Each version button must advertise context actions only when the group is exact',
 );
 assert.match(
 	viewDecorator,
@@ -271,7 +292,6 @@ const versionFileCreationMessage = readPlugin(
 const versionFileCreationTransaction = readPlugin(
 	'src/version-file-creation-transaction.ts',
 );
-const createVersionModal = readPlugin('src/ui/create-version-modal.ts');
 const managementCreation = readPlugin('src/ui/version-management-modal.ts');
 assert.match(
 	versionFileCreation,
@@ -320,8 +340,8 @@ assert.match(
 );
 assert.match(
 	viewDecorator,
-	/detectVersionFileFormat\(view\.file \?\? v1\.file\) \?\? 'markdown'[\s\S]*?\(filename, format\) => this\.createSpecificVersion[\s\S]*?createAndRegisterVersionFile/u,
-	'Editor maximum and gap creation must default to the open member format and use the shared transaction',
+	/const sourceFile = view\.file && current\.versions\.some[\s\S]*?\? view\.file[\s\S]*?: v1\.file;[\s\S]*?detectVersionFileFormat\(sourceFile\) \?\? 'markdown'[\s\S]*?\(filename, format\) => this\.createSpecificVersion[\s\S]*?createAndRegisterVersionFile/u,
+	'Editor maximum and gap creation must freeze the current member format and use the shared transaction',
 );
 assert.match(
 	managementCreation,
@@ -345,7 +365,198 @@ assert.doesNotMatch(
 );
 
 const main = readPlugin('src/main.ts');
+const seriesMoveTransactionSource = readPlugin('src/series-move-transaction.ts');
+const versionIndexSource = readPlugin('src/version-index.ts');
+const versionRegistrySource = readPlugin('src/version-registry.ts');
+const versionFileMenuState = readPlugin('src/version-file-menu-state.ts');
 const settingsSource = readPlugin('src/settings.ts');
+assert.match(
+	versionRegistrySource,
+	/async createSeries\(v1: TFile, v2: TFile\)[\s\S]*?return this\.enqueue[\s\S]*?this\.assertFilesAreLive\(\[v1, v2\]\)[\s\S]*?this\.assertFilesAreUnmanaged\(\[v1, v2\]\)[\s\S]*?await this\.commit\(next\)/u,
+	'Initial V1/V2 registration must serialize and re-check live unmanaged files before committing',
+);
+assert.match(
+	viewDecorator,
+	/if \(!group\) \{[\s\S]*?this\.removeControls\(view\);[\s\S]*?this\.ensureStandaloneAction\(view, false\);[\s\S]*?if \(group\.status !== 'healthy'\)[\s\S]*?this\.ensureStandaloneAction\(view, true\);[\s\S]*?this\.removeStandaloneAction\(view\);[\s\S]*?this\.renderControls\(view, group\)/u,
+	'Unmanaged notes must show only quick-create, damaged relationships repair, and healthy relationships the full controls',
+);
+assert.match(
+	viewDecorator,
+	/const actionEl = view\.addAction\([\s\S]*?'plus'[\s\S]*?handleAddVersion[\s\S]*?const manageEl = view\.addAction\([\s\S]*?'list-tree'/u,
+	'Healthy relationships must render both the persistent plus action and Version management',
+);
+assert.match(
+	viewDecorator,
+	/private renderControls[\s\S]*?classList\.remove\('is-disabled'\)[\s\S]*?removeAttribute\('aria-disabled'\)/u,
+	'The plus action must remain enabled for every healthy exact or compatible relationship',
+);
+assert.match(
+	viewDecorator,
+	/private handleAddVersion[\s\S]*?group\.status !== 'healthy'[\s\S]*?private openCreateVersionModal[\s\S]*?captureAppendExpectation\(current\.id\)[\s\S]*?appendMemberToResolvedSeries/u,
+	'Healthy compatible groups must enter the dedicated append-only creation path',
+);
+const captureAppendExpectation = versionRegistrySource.match(
+	/captureAppendExpectation\(seriesId: string\): VersionAppendExpectation \| null \{[\s\S]*?\n\t\}/u,
+)?.[0] ?? '';
+assert.match(
+	captureAppendExpectation,
+	/captureResolvedSeriesExpectation[\s\S]*?this\.appendExpectations\.add\(expectation\)/u,
+	'Append authorization must be tracked as a one-shot resolved-series expectation',
+);
+const captureResolvedSeriesExpectation = versionRegistrySource.match(
+	/private captureResolvedSeriesExpectation\([\s\S]*?\n\t\}/u,
+)?.[0] ?? '';
+assert.match(
+	captureResolvedSeriesExpectation,
+	/this\.index\.rebuild\(this\.records\)[\s\S]*?group\.status !== 'healthy'[\s\S]*?memberResolvesToFile\(slot\.member, file\)[\s\S]*?members\.length !== group\.versions\.length/u,
+	'Resolved-series authorization must use a fresh index and require every exact or precision-compatible member',
+);
+const appendResolvedMember = versionRegistrySource.match(
+	/async appendMemberToResolvedSeries\([\s\S]*?\n\t\}/u,
+)?.[0] ?? '';
+assert.match(
+	appendResolvedMember,
+	/captureFile\(file\)[\s\S]*?memberRecordFromFile\(file\)[\s\S]*?this\.appendExpectations\.delete\(expectation\)[\s\S]*?assertExpectedRevision[\s\S]*?assertExpectedSeries[\s\S]*?group\.status !== 'healthy'[\s\S]*?assertResolvedSeriesExpectation[\s\S]*?isCapturedFile\(liveFile, fileCapture\)[\s\S]*?assertPathsAreUnmanaged\(\[member\.path\]\)[\s\S]*?slots\.push\([\s\S]*?member,[\s\S]*?version,[\s\S]*?await this\.commit\(next\)/u,
+	'Append-only registration must freeze the new file, consume one CAS token, recheck every old member, and append exactly once',
+);
+assert.doesNotMatch(
+	appendResolvedMember,
+	/slot\.member\s*=|\.slots\.sort|\b(?:rename|move|trash)\w*\(/u,
+	'Append-only registration must never rewrite old slots or move, rename, or trash a real member',
+);
+assert.match(
+	versionRegistrySource,
+	/private assertFilesAreLive[\s\S]*?current !== file[\s\S]*?memberMatchesFile/u,
+	'General registry mutations must reject a stale same-path TFile replacement',
+);
+assert.match(
+	versionFileMenuState,
+	/group\?\.status === 'healthy'[\s\S]*?resolvedVersion !== null[\s\S]*?resolvedVersion\.version === 1 \? 'manage' : 'locate'[\s\S]*?group !== null \|\| registeredSeriesCount > 0 \? 'repair' : 'create'/u,
+	'Visible file-menu state must treat exact and precision-compatible healthy members as managed while reserving repair for damaged or unresolved registrations',
+);
+assert.match(
+	main,
+	/getVersionFileMenuState\([\s\S]*?menuState\.action === 'repair'[\s\S]*?fileExplorer\.manageVersions[\s\S]*?registeredSeriesIds\.length > 0[\s\S]*?: 'plus'[\s\S]*?else \{\s*this\.versionViews\.openInitialVersionModalForFile\(file\);\s*\}/u,
+	'An entirely unmanaged file-menu item must keep its familiar label and plus icon while routing to the shared quick-create flow',
+);
+assert.doesNotMatch(
+	main,
+	/else \{\s*this\.openVersionManager\(file\);\s*\}/u,
+	'An entirely unmanaged file-menu item must never regress to opening Version management',
+);
+const externalSettingsReload = main.match(
+	/async onExternalSettingsChange\(\): Promise<void> \{[\s\S]*?\n\t\}/u,
+)?.[0] ?? '';
+assert.match(
+	externalSettingsReload,
+	/this\.loadData\(\)[\s\S]*?normalizeExternalPluginData\(raw\)[\s\S]*?this\.registry\.reload[\s\S]*?this\.dataStore\.reconcile[\s\S]*?mergeExternalPluginData[\s\S]*?this\.scheduleUiRefresh\(\)/u,
+	'Externally synchronized plugin data must reload the serialized store, registry, and visible UI',
+);
+assert.doesNotMatch(
+	externalSettingsReload,
+	/saveData|persistSeries|updatePluginData/u,
+	'External settings reload must not write the synchronized snapshot straight back',
+);
+assert.match(
+	main,
+	/private externalSettingsBase: VersionSettings \| null = null;[\s\S]*?private externalRegistryBase: VersionSeriesRecord\[\] = \[\];[\s\S]*?private externalRegistryBaseTrusted = false;[\s\S]*?private async loadSettings\(\)[\s\S]*?this\.externalSettingsBase = normalizePluginData\(this\.settings\);[\s\S]*?this\.externalRegistryBase = cloneSeriesRecords\(this\.settings\.series\);[\s\S]*?this\.externalRegistryBaseTrusted = false/u,
+	'The plugin must initialize separate scalar and registry external merge bases from startup data',
+);
+assert.match(
+	externalSettingsReload,
+	/const capturedRegistryBase = this\.externalRegistryBaseTrusted[\s\S]*?\? cloneSeriesRecords\(this\.externalRegistryBase\)[\s\S]*?: \[\];[\s\S]*?const rawSnapshot = this\.loadData\(\)\.then\([\s\S]*?ok: true as const[\s\S]*?ok: false as const[\s\S]*?const operation = async \(\): Promise<void> =>/u,
+	'Each external callback must capture its registry base and a settled raw-data read before waiting in the reload queue',
+);
+assert.match(
+	externalSettingsReload,
+	/const latestBase = normalizePluginData\([\s\S]*?this\.externalSettingsBase \?\? this\.dataStore\.get\(\)[\s\S]*?const mergeBase = normalizePluginData\(\{[\s\S]*?\.\.\.latestBase,[\s\S]*?series: capturedRegistryBase,[\s\S]*?this\.dataStore\.reconcile\([\s\S]*?mergeBase,[\s\S]*?incoming,[\s\S]*?reconciled = normalizePluginData\(next\)/u,
+	'The queued reload must combine its captured registry base with the freshest scalar base',
+);
+assert.match(
+	externalSettingsReload,
+	/if \(!protectedReplay\) \{[\s\S]*?this\.externalSettingsBase = normalizePluginData\(reconciled\);[\s\S]*?this\.externalRegistryBase = cloneSeriesRecords\(incoming\.series\);[\s\S]*?this\.externalRegistryBaseTrusted = true;[\s\S]*?\}/u,
+	'Only an ordinary reconciliation may advance scalar state and its registry base must advance to incoming.series rather than the merged write-back',
+);
+assert.match(
+	externalSettingsReload,
+	/const protectedReplay = this\.protectedExternalSnapshots\.some[\s\S]*?return protectedReplay[\s\S]*?\? normalizePluginData\(current\)[\s\S]*?: mergeExternalPluginData\([\s\S]*?!versionPluginDataEqual\(reconciled, incoming\)[\s\S]*?if \(!protectedReplay\)[\s\S]*?this\.protectedExternalSnapshots\.push\([\s\S]*?normalizePluginData\(incoming\)/u,
+	'An incoming snapshot that loses reconciliation must be protected against destructive replay',
+);
+assert.match(
+	versionIndexSource,
+	/memberResolvesToFile\(slot\.member, file\)/u,
+	'Cross-device coarse-time compatibility must resolve the non-destructive index',
+);
+assert.match(
+	versionRegistrySource,
+	/async addMember\([\s\S]*?assertSeriesExactlyResolved\(seriesId\)[\s\S]*?assertMembersResolve\(series\.slots\)/u,
+	'General member mutation must remain exact even though the isolated append-only path accepts compatibility',
+);
+assert.match(
+	versionIndexSource,
+	/identityStatus: VersionIdentityStatus[\s\S]*?!memberMatchesFile\(slot\.member, file\)[\s\S]*?identityStatus = 'compatible'/u,
+	'Compatible display resolution must remain distinguishable from exact mutation identity',
+);
+assert.match(
+	main,
+	/resolveExactGroup\(group\.id\)[\s\S]*?releaseVersionMembers\([\s\S]*?expectedSeries[\s\S]*?resolveExactGroup\(group\.id\)[\s\S]*?new MoveThemeModal/u,
+	'Destructive dialogs must re-resolve exact identities and capture the current series snapshot',
+);
+assert.match(
+	main,
+	/private resolveExactGroup\(seriesId: string\): VersionGroup \| null \{[\s\S]*?registry\.resolveExactlyMatchedGroup\(seriesId\)[\s\S]*?isCurrentExactVersionMember[\s\S]*?memberMatchesFile\(registeredMember, file\)[\s\S]*?captureMergeFileExpectation[\s\S]*?memberMatchesFile\(registeredMember, file\)/u,
+	'Rename, single-file move, native actions, and both merge endpoints must use a fresh raw-member exact identity gate',
+);
+assert.match(
+	versionRegistrySource,
+	/resolveExactlyMatchedGroup\(seriesId: string\): VersionGroup \| null \{[\s\S]*?index\.rebuild\(this\.records\)[\s\S]*?getRecordById\(seriesId\)[\s\S]*?memberMatchesFile\(slot\.member, file\)[\s\S]*?return group/u,
+	'External file mutations must not trust an exact status cached before an in-place TFile ctime change',
+);
+assert.match(
+	managementCreation,
+	/initialSeriesRecord[\s\S]*?preflightSeriesSlots\([\s\S]*?this\.initialSeriesRecord[\s\S]*?saveSeriesSlots\([\s\S]*?this\.initialSeriesRecord/u,
+	'An open Version management editor must compare-and-swap its original series snapshot',
+);
+assert.match(
+	managementCreation,
+	/dissolveSeries\([\s\S]*?this\.initialSeriesRecord/u,
+	'An open Version management editor must compare-and-swap before dissolving a series',
+);
+assert.match(
+	managementCreation,
+	/this\.initialRegistryRevision = registry\.getRevision\(\)[\s\S]*?preflightSeriesSlots\([\s\S]*?this\.initialRegistryRevision[\s\S]*?saveSeriesSlots\([\s\S]*?this\.initialRegistryRevision[\s\S]*?dissolveSeries\([\s\S]*?this\.initialRegistryRevision/u,
+	'Version management must pass one captured registry revision through preflight, save, and explicit dissolve',
+);
+assert.match(
+	main,
+	/const expectedRevision = this\.registry\.getRevision\(\);[\s\S]*?this\.moveEnvironment\(seriesId, record, expectedRevision\)[\s\S]*?private moveEnvironment\([\s\S]*?expectedRevision\?: number[\s\S]*?saveSeriesSlots\([\s\S]*?expectedSeries,[\s\S]*?expectedRevision/u,
+	'Whole-series movement must carry one captured registry revision into its final slot commit',
+);
+assert.match(
+	seriesMoveTransactionSource,
+	/export interface SeriesMoveEnvironment \{[\s\S]*?canRollback\?: \(plan: SeriesMovePlan\) => boolean;[\s\S]*?rollbackSeriesMoves\([\s\S]*?environment\.canRollback && !environment\.canRollback\(plan\)/u,
+	'Whole-series rollback must support a production ownership and revision veto',
+);
+assert.match(
+	seriesMoveTransactionSource,
+	/export interface SeriesMoveEnvironment \{[\s\S]*?isPathRegistered\?: \(path: string\) => boolean;[\s\S]*?collisionCount = plans\.filter\([\s\S]*?environment\.isPathRegistered\?\.\(plan\.to\)[\s\S]*?for \(const plan of plans\)[\s\S]*?if \(environment\.isPathRegistered\?\.\(plan\.to\)\)[\s\S]*?await environment\.renameFile/u,
+	'Whole-series forward preflight must treat registry-only destinations as collisions both before and during the move loop',
+);
+assert.match(
+	main,
+	/canRollback: \(plan: SeriesMovePlan\) =>[\s\S]*?this\.registry\.getRevision\(\) === expectedRevision[\s\S]*?this\.registry\.getRecords\(\)\.some[\s\S]*?slot\.member\?\.path === plan\.to/u,
+	'Production whole-series rollback must reject changed revisions and newly registered destinations',
+);
+assert.match(
+	main,
+	/isPathRegistered: \(path: string\) =>[\s\S]*?this\.registry\.getRecords\(\)\.some[\s\S]*?slot\.member\?\.path === path/u,
+	'Production whole-series movement must expose registry-only path ownership to transaction preflight',
+);
+assert.match(
+	managementCreation,
+	/private planReleasedMoves\([\s\S]*?this\.app\.vault\.getAbstractFileByPath\(plan\.to\) \|\|[\s\S]*?this\.isRegisteredPath\(plan\.to\)/u,
+	'Released-file planning must reject a destination reserved only by registry data',
+);
 assert.match(
 	settingsSource,
 	/getSettingDefinitions\(\): SettingDefinitionItem<VersionSettingKey>\[\][\s\S]*?type: 'group'[\s\S]*?cls: 'version-settings-section'/u,
@@ -442,6 +653,26 @@ assert.match(
 	/不会根据文件名猜测关系[\s\S]*?不会改写笔记正文[\s\S]*?优先恢复文件的可见性/u,
 	'Chinese documentation must preserve explicit membership and fail-open semantics',
 );
+assert.match(
+	readme,
+	/Use the \*\*\+\*\* action to open the quick-create dialog[\s\S]*?The \*\*\+\*\* action remains available/u,
+	'English basic use must preserve persistent quick-create semantics',
+);
+assert.match(
+	readme,
+	/点击“\+”[\s\S]*?“\+”会一直保留/u,
+	'Chinese basic use must preserve persistent quick-create semantics',
+);
+assert.match(
+	readme,
+	/Install Multi-Version Notes from \*\*Settings → Community plugins\*\*[\s\S]*?https:\/\/github\.com\/mizhidaili\/version\/issues/u,
+	'English publication documentation must contain the current install route and support URL',
+);
+assert.match(
+	readme,
+	/前往“设置 → 第三方插件”[\s\S]*?https:\/\/github\.com\/mizhidaili\/version\/issues/u,
+	'Chinese publication documentation must contain the current install route and support URL',
+);
 const acceptanceMatrix = readPlugin('docs/acceptance-matrix.md');
 assert.match(
 	acceptanceMatrix,
@@ -450,23 +681,23 @@ assert.match(
 );
 assert.match(
 	acceptanceMatrix,
-	/223 typed keys have exact key and placeholder parity across all four locales/u,
+	/226 typed keys have exact key and placeholder parity across all four locales/u,
 	'Acceptance evidence must retain the actual current locale key count',
 );
 assert.match(
 	acceptanceMatrix,
-	/Current `npm test` passes its model\/registry suite and verifies 223 keys across four locales[\s\S]*?exact model assertion total is emitted by the runner rather than duplicated here/u,
+	/Current `npm test` passes its model\/registry suite and verifies 226 keys across four locales[\s\S]*?exact model assertion total is emitted by the runner rather than duplicated here/u,
 	'Acceptance evidence must not duplicate a fast-changing model assertion total',
 );
 assert.match(
 	acceptanceMatrix,
-	/Current follow-up candidate runtime UI \| not verified/u,
-	'Static and model validation must not be reported as final human UI acceptance',
+	/Current follow-up candidate runtime UI \| partial[\s\S]*?physical-iPad canary was accepted[\s\S]*?remain bounded residual gates/u,
+	'Bounded physical-device acceptance must retain unrelated UI residual gates',
 );
 assert.match(
 	acceptanceMatrix,
-	/File Explorer folding, virtualization, and failure visibility \| partial[\s\S]*?live folder folding[\s\S]*?pending/u,
-	'File Explorer source/model evidence must retain its live remount acceptance gate',
+	/File Explorer folding, virtualization, and failure visibility \| partial[\s\S]*?physical-iPad drawer grouping was accepted[\s\S]*?exhaustive folder folding[\s\S]*?remain pending/u,
+	'Accepted iPad grouping must retain the wider folding and row-reuse stress gate',
 );
 assert.match(
 	acceptanceMatrix,
@@ -475,8 +706,8 @@ assert.match(
 );
 assert.match(
 	acceptanceMatrix,
-	/Physical touch\/mobile management workflow \| not verified/u,
-	'Emulation evidence must not be overstated as physical mobile acceptance',
+	/Physical touch\/mobile management workflow \| partial[\s\S]*?Physical iPad acceptance passed[\s\S]*?remain separate open gates/u,
+	'Physical mobile acceptance must remain scoped to the flows actually exercised',
 );
 assert.match(
 	acceptanceMatrix,
@@ -515,11 +746,46 @@ assert.match(
 	'Rail evidence must retain both the targeted live geometry result and the wider acceptance gate',
 );
 const notePreview = readPlugin('src/ui/note-preview.ts');
-assert.match(notePreview, /endsWith\('\.excalidraw\.md'\)/u);
 assert.match(
 	notePreview,
-	/generateMarkdownLink\(file, ''\)[\s\S]*?renderMarkdown\(file, `!\$\{link\}`, ''\)/u,
-	'Canvas and Excalidraw previews must use a real Obsidian embed so their native renderer can participate',
+	/isExcalidrawPreviewSource\(file, source\)[\s\S]*?createExcalidrawPreviewSvg\(this\.app, file, hostWindow\)/u,
+	'Explicit and content-identified Excalidraw previews must use the plugin\'s public SVG export API instead of exposing drawing Markdown',
+);
+assert.match(
+	notePreview,
+	/file\.extension\.toLocaleLowerCase\(\) === 'canvas'[\s\S]*?generateMarkdownLink\(file, ''\)[\s\S]*?renderMarkdown\(file, `!\$\{link\}`, ''\)/u,
+	'Canvas previews must retain their real Obsidian embed renderer',
+);
+const excalidrawPreview = readPlugin('src/excalidraw-preview.ts');
+assert.match(
+	excalidrawPreview,
+	/isExcalidrawVersionFile\(file\)[\s\S]*?isMarkdownVersionFile\(file\) && hasExcalidrawFrontmatter\(source\)/u,
+	'An ordinary .md may enter Excalidraw preview only through the official root frontmatter marker',
+);
+assert.match(
+	excalidrawPreview,
+	/EXCALIDRAW_FRONTMATTER[\s\S]*?excalidraw-plugin/u,
+	'Content classification must pin the official root Excalidraw frontmatter key',
+);
+assert.doesNotMatch(
+	excalidrawPreview,
+	/hasExcalidrawDataBlock|EXCALIDRAW_DATA_HEADING|compressed-json/u,
+	'Serialized drawing headings or payloads alone must never promote ordinary Markdown',
+);
+assert.match(
+	excalidrawPreview,
+	/enabledPlugins\?\.has\(EXCALIDRAW_PLUGIN_ID\)/u,
+	'Excalidraw SVG preview must require the enabled plugin',
+);
+assert.match(
+	excalidrawPreview,
+	/factory\.getAPI\(\)[\s\S]*?automate\.createSVG\(file\.path, false\)/u,
+	'Excalidraw SVG preview must use a disposable Automate API instance',
+);
+assert.match(
+	excalidrawPreview,
+	/finally\s*\{[\s\S]*?automate\?\.destroy\(\)/u,
+	'Excalidraw preview must release its temporary Automate API instance on every outcome',
 );
 const hoverPreview = readPlugin('src/ui/hover-preview.ts');
 const showDelay = Number(
@@ -655,13 +921,28 @@ const deleteVersionsModal = readPlugin('src/ui/delete-versions-modal.ts');
 assert.match(fileExplorer, /no public API for hiding individual rows/u);
 assert.match(
 	fileExplorer,
+	/const FILE_TITLE_SELECTOR = '\.nav-file-title';[\s\S]*?getFileExplorerTitlePath[\s\S]*?titleEl\.dataset\.path[\s\S]*?closest<HTMLElement>\('\.nav-file\[data-path\]'\)/u,
+	'File Explorer mapping must accept desktop and mobile path placement without reading the visible filename',
+);
+assert.match(
+	fileExplorer,
 	/buildFileExplorerVisibilityPlan[\s\S]*?group\.status !== 'healthy'[\s\S]*?getOverallVersion\(group\)[\s\S]*?hiddenPaths: group\.versions/u,
-	'File Explorer visibility must derive from healthy registry groups and the registered V1 mapping',
+	'File Explorer visibility may use a healthy precision-compatible registry mapping without authorizing mutation',
 );
 assert.match(
 	fileExplorer,
 	/for \(const hiddenPath of visibility\.hiddenPaths\)[\s\S]*?row\.addClass\('version-file-hidden'\)[\s\S]*?const v1Title = titlesByPath\.get\(visibility\.representativePath\)[\s\S]*?if \(!v1Title\) \{\s*return;/u,
 	'Mounted non-V1 rows must be hidden before the optional V1 DOM decoration is attempted',
+);
+assert.match(
+	fileExplorer,
+	/getLeavesOfType\('file-explorer'\)[\s\S]*?workspace\.containerEl[\s\S]*?querySelectorAll<HTMLElement>\([\s\S]*?FILE_EXPLORER_CONTAINER_SELECTOR[\s\S]*?root\.contains\(container\)[\s\S]*?roots\.add\(container\)/u,
+	'The mobile drawer must have a narrowly scoped native-container fallback when no File Explorer leaf root owns it',
+);
+assert.match(
+	fileExplorer,
+	/observeWorkspaceForExplorerRoots[\s\S]*?record\.addedNodes[\s\S]*?record\.removedNodes[\s\S]*?containsFileExplorerMarkup\(node\)[\s\S]*?childList: true,[\s\S]*?subtree: true/u,
+	'Late mobile drawer mounts must trigger a filtered File Explorer refresh',
 );
 assert.match(
 	fileExplorer,
@@ -675,13 +956,13 @@ assert.match(
 );
 assert.match(
 	fileExplorer,
-	/title\.dataset\.path !== activePath[\s\S]*?title\.removeClass\('is-active'\)/u,
-	'Mirrored active feedback must be removed without stripping native V1 state',
+	/getFileExplorerTitlePath\(title\) !== activePath[\s\S]*?title\.removeClass\('is-active'\)/u,
+	'Mirrored active feedback must use desktop or mobile paths without stripping native V1 state',
 );
 assert.match(
 	readPlugin('src/main.ts'),
-	/exactVersion[\s\S]*?fileExplorer\.locateVersion[\s\S]*?openVersionManager\(file, group\.id\)/u,
-	'Hidden members must expose a visible Version-owned route into their exact relationship slot',
+	/resolvedVersion[\s\S]*?fileExplorer\.locateVersion[\s\S]*?openVersionManager\(file, group\.id\)/u,
+	'Hidden members must expose a visible Version-owned route into their healthy relationship slot',
 );
 assert.match(
 	readPlugin('src/ui/version-management-modal.ts'),
@@ -689,6 +970,52 @@ assert.match(
 	'Version management must visibly locate the exact real member supplied by a menu action',
 );
 const versionManagementModal = readPlugin('src/ui/version-management-modal.ts');
+assert.match(
+	versionManagementModal,
+	/registry\.rebuild\(\)[\s\S]*?captureManagementExpectation\(record\.id\)[\s\S]*?buildDraftSlots\([\s\S]*?record\.slots,[\s\S]*?this\.registeredMembersByFile/u,
+	'Version management must refresh live ctimes before capturing a full-management authorization and building slots',
+);
+assert.match(
+	versionManagementModal,
+	/function buildDraftSlots\([\s\S]*?memberResolvesToFile\(member, file\)[\s\S]*?kind: 'existing'[\s\S]*?kind: 'identity-conflict'[\s\S]*?kind: 'missing'/u,
+	'Every compatible path must render as existing, while a present conflicting path remains distinct from a truly missing file',
+);
+assert.doesNotMatch(
+	versionManagementModal,
+	/compatibleReadOnly|is-compatible-read-only/u,
+	'Precision compatibility must not disable the normal management controls',
+);
+assert.match(
+	versionManagementModal,
+	/this\.managementExpectation[\s\S]*?saveResolvedSeriesManagement\([\s\S]*?this\.managementExpectation,[\s\S]*?assignments/u,
+	'Healthy exact and compatible management must commit through the guarded mapping-only transaction',
+);
+const resolvedManagementSave = versionRegistrySource.match(
+	/async saveResolvedSeriesManagement\([\s\S]*?\n\t\}/u,
+)?.[0] ?? '';
+assert.match(
+	resolvedManagementSave,
+	/captureFile\(assignment\.file\)[\s\S]*?managementExpectations\.delete\(expectation\)[\s\S]*?assertExpectedRevision[\s\S]*?assertExpectedSeries[\s\S]*?originalByFile[\s\S]*?isCapturedFile/u,
+	'Compatible management must consume a one-shot CAS expectation and capture every retained assignment',
+);
+assert.match(
+	resolvedManagementSave,
+	/expected\.file\.stat\.ctime !== expected\.ctime[\s\S]*?memberRecordsEqual\(assignment\.member, originalMember\)[\s\S]*?memberResolvesToFile\(originalMember, assignment\.capture\.file\)[\s\S]*?originalByPath\.has\(assignment\.member\.path\)[\s\S]*?memberRecordFromFile\(assignment\.capture\.file\)[\s\S]*?memberMatchesFile/u,
+	'Retained old members must keep their stored path and ctime and exact captured object, while new files require exact live identity and cannot replace an old path',
+);
+const resolvedManagementDissolve = versionRegistrySource.match(
+	/async dissolveResolvedSeriesManagement\([\s\S]*?\n\t\}/u,
+)?.[0] ?? '';
+assert.match(
+	resolvedManagementDissolve,
+	/managementExpectations\.delete\(expectation\)[\s\S]*?assertExpectedRevision[\s\S]*?assertExpectedSeries[\s\S]*?index\.rebuild[\s\S]*?assertResolvedSeriesExpectation\(series, expectation\)[\s\S]*?next\.splice\(seriesIndex, 1\)[\s\S]*?await this\.commit\(next\)/u,
+	'Compatible dissolve must consume its one-shot CAS authorization and revalidate every captured member before forgetting the mapping',
+);
+assert.match(
+	main,
+	/if \(group && isVersionGroupExactlyResolved\(group\)\) \{[\s\S]*?openVersionFileActions[\s\S]*?openMoveTheme[\s\S]*?openDeleteVersions/u,
+	'File actions, movement, and deletion must remain behind the exact-identity gate',
+);
 assert.match(
 	versionManagementModal,
 	/currentSeries\?\.folder === node\.path[\s\S]*?renderCurrentSeries\(container, entry\.entry\)/u,
@@ -787,7 +1114,7 @@ const catalogs = {
 	ja: readCatalog('src/locales/ja.ts', 'JA'),
 };
 const keyCount = Object.keys(catalogs.en).length;
-assert.equal(keyCount, 223);
+assert.equal(keyCount, 226);
 for (const [language, catalog] of Object.entries(catalogs)) {
 	assert.deepEqual(
 		Object.keys(catalog).sort(),
@@ -804,28 +1131,32 @@ const sampledSafety = {
 	en: {
 		'delete.description': /real file.*trash/iu,
 		'manage.deleteSlot': /keep its file/iu,
-		'manage.dissolveConfirmDescription': /does not delete or modify any member files/iu,
+		'manage.dissolveConfirmTitle': /^Stop managing this version series\?$/u,
+		'manage.dissolveConfirmDescription': /No files.*deleted.*contents modified.*released files may be moved/iu,
 		'manage.missingPreview': /could not be found.*repair/iu,
 		'manage.keyboardPicked': /Enter or Space.*Escape/iu,
 	},
 	'zh-CN': {
 		'delete.description': /真实文件.*废纸篓/u,
 		'manage.deleteSlot': /保留文件/u,
-		'manage.dissolveConfirmDescription': /不会删除或修改任何成员文件/u,
+		'manage.dissolveConfirmTitle': /^要停止管理这个版本系列吗？$/u,
+		'manage.dissolveConfirmDescription': /不会删除任何文件.*不会修改文件内容.*可能.*移动/u,
 		'manage.missingPreview': /无法.*找到.*修复/u,
 		'manage.keyboardPicked': /Enter.*空格.*Escape/u,
 	},
 	da: {
 		'delete.description': /faktiske fil.*papirkurv/iu,
 		'manage.deleteSlot': /behold filen/iu,
-		'manage.dissolveConfirmDescription': /sletter eller ændrer ingen medlemsfiler/iu,
+		'manage.dissolveConfirmTitle': /^Stop versionsstyringen for denne serie\?$/u,
+		'manage.dissolveConfirmDescription': /Ingen filer slettes.*filindholdet ændres ikke.*kan blive flyttet/iu,
 		'manage.missingPreview': /ikke fundet.*reparere/iu,
 		'manage.keyboardPicked': /Enter.*mellemrum.*Escape/iu,
 	},
 	ja: {
 		'delete.description': /実ファイル.*ゴミ箱/u,
 		'manage.deleteSlot': /ファイルは保持/u,
-		'manage.dissolveConfirmDescription': /ファイルは削除も変更もされません/u,
+		'manage.dissolveConfirmTitle': /^このシリーズのバージョン管理を停止しますか？$/u,
+		'manage.dissolveConfirmDescription': /ファイル.*削除.*内容.*変更.*ありません.*移動される場合/u,
 		'manage.missingPreview': /見つかりません.*修復/u,
 		'manage.keyboardPicked': /Enter.*Space.*Escape/u,
 	},

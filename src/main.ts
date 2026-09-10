@@ -15,21 +15,29 @@ import {
 	VersionSettingTab,
 } from './settings';
 import {
+	cloneSeriesRecords,
+	hasUnsupportedExplicitSchema,
 	isValidFilenameTemplate,
 	memberMatchesFile,
+	mergeExternalPluginData,
+	normalizeExternalPluginData,
 	normalizePluginData,
 	ReleasedVersionDestination,
 	VersionSeriesRecord,
 	VersionSlotRecord,
+	versionPluginDataEqual,
 } from './version-data';
-import { VersionGroup } from './version-index';
+import {
+	isVersionGroupExactlyResolved,
+	VersionGroup,
+} from './version-index';
 import { VersionRegistry } from './version-registry';
 import { isVersionableFile } from './version-file-types';
+import { getVersionFileMenuState } from './version-file-menu-state';
 import { SerializedDataStore } from './serialized-data-store';
 import { MovePlan } from './move-theme-plans';
 import {
 	executeSeriesMove,
-	rollbackSeriesMoves,
 	SeriesMoveError,
 	SeriesMovePlan,
 } from './series-move-transaction';
@@ -55,7 +63,10 @@ import { VersionLinkModal } from './ui/version-link-modal';
 import { VersionEditorSuggest } from './ui/version-editor-suggest';
 import { VersionFileActionsModal } from './ui/version-file-actions-modal';
 import { VersionManagementModal } from './ui/version-management-modal';
-import { VersionMergeTargetModal } from './ui/version-merge-modal';
+import {
+	VersionMergeFileExpectation,
+	VersionMergeTargetModal,
+} from './ui/version-merge-modal';
 import { VersionSeriesModal } from './ui/version-series-modal';
 import { VersionViewDecorator } from './ui/version-view-decorator';
 
@@ -71,12 +82,17 @@ export default class VersionPlugin extends Plugin {
 	private editorSuggest!: VersionEditorSuggest;
 	private versionViews!: VersionViewDecorator;
 	private settingTab: VersionSettingTab | null = null;
+	private externalSettingsBase: VersionSettings | null = null;
+	private externalRegistryBase: VersionSeriesRecord[] = [];
+	private externalRegistryBaseTrusted = false;
+	private readonly protectedExternalSnapshots: VersionSettings[] = [];
 	private unloaded = false;
 	private readonly internalRenamePaths = new Set<string>();
 	private readonly incompleteDeleteNoticeTimers = new Map<string, number>();
 	private readonly delayedUiRefreshTimers = new Set<number>();
 	private readonly folderRenameCleanupTimers = new Set<number>();
 	private readonly pendingFolderRenames: FolderRenameObservation[] = [];
+	private externalSettingsQueue: Promise<void> = Promise.resolve();
 	private renameEventQueue: Promise<void> = Promise.resolve();
 	private readonly localizedCommands = new Map<
 		keyof LocalizedCommandNames,
@@ -204,35 +220,38 @@ export default class VersionPlugin extends Plugin {
 					}
 					if (file instanceof TFile && isVersionableFile(file)) {
 						const group = index.getGroupForFile(file);
-						const exactVersion = group?.status === 'healthy'
-							? group.versions.find((member) => member.path === file.path)
-							: null;
 						const registeredSeriesIds = this.registry.getRecords()
 							.filter((record) => record.slots.some(
 								(slot) => slot.member?.path === file.path,
 							))
 							.map((record) => record.id);
-						const needsRepair = group?.status !== 'healthy' &&
-							(group !== null || registeredSeriesIds.length > 0);
-						const isManagedMember = group?.status === 'healthy' &&
-							exactVersion !== null;
+						const menuState = getVersionFileMenuState(
+							group,
+							file.path,
+							registeredSeriesIds.length,
+						);
+						const { isManagedMember, resolvedVersion } = menuState;
 						if (isManagedMember) {
 							resetManagedFileMenu(menu);
 						}
 						menu.addItem((item) =>
 							item
 								.setTitle(
-									this.i18n.t(needsRepair
+									this.i18n.t(menuState.action === 'repair'
 										? 'view.repairVersions'
-										: exactVersion && exactVersion.version !== 1
+										: menuState.action === 'locate'
 											? 'fileExplorer.locateVersion'
-										: group
-											? 'fileExplorer.manageVersions'
-											: 'fileExplorer.createVersions', {
-										version: exactVersion?.version ?? 1,
+											: menuState.action === 'manage'
+												? 'fileExplorer.manageVersions'
+												: 'fileExplorer.createVersions', {
+									version: resolvedVersion?.version ?? 1,
 									}),
 								)
-								.setIcon('list-tree')
+								.setIcon(
+									group || registeredSeriesIds.length > 0
+										? 'list-tree'
+										: 'plus',
+								)
 								.setSection('version')
 								.onClick(() => {
 									if (group) {
@@ -246,11 +265,20 @@ export default class VersionPlugin extends Plugin {
 											new Set(registeredSeriesIds),
 										);
 									} else {
-										this.openVersionManager(file);
+										this.versionViews.openInitialVersionModalForFile(file);
 									}
 								}),
 						);
 						if (group?.status === 'healthy') {
+							menu.addItem((item) =>
+								item
+									.setTitle(this.i18n.t('command.showBacklinks'))
+									.setIcon('links-coming-in')
+									.setSection('version-group')
+									.onClick(() => this.openThemeBacklinks(group)),
+							);
+						}
+						if (group && isVersionGroupExactlyResolved(group)) {
 							menu.addItem((item) =>
 								item
 									.setTitle(this.i18n.t('fileExplorer.fileActions'))
@@ -260,13 +288,6 @@ export default class VersionPlugin extends Plugin {
 										group,
 										file,
 									)),
-							);
-							menu.addItem((item) =>
-								item
-									.setTitle(this.i18n.t('command.showBacklinks'))
-									.setIcon('links-coming-in')
-									.setSection('version-group')
-									.onClick(() => this.openThemeBacklinks(group)),
 							);
 							menu.addItem((item) =>
 								item
@@ -286,7 +307,11 @@ export default class VersionPlugin extends Plugin {
 						}
 						if (isManagedMember) {
 							scheduleManagedFileMenuPrune(menu);
-						} else if (file.extension.toLocaleLowerCase() === 'md') {
+						} else if (
+							!group &&
+							registeredSeriesIds.length === 0 &&
+							file.extension.toLocaleLowerCase() === 'md'
+						) {
 							// Note Composer enumerates physical TFiles. Replace only its
 							// merge entry with Version's topic-first target picker; all
 							// unrelated core and third-party menu items remain untouched.
@@ -338,9 +363,129 @@ export default class VersionPlugin extends Plugin {
 			window.clearTimeout(timer);
 		}
 		this.incompleteDeleteNoticeTimers.clear();
-		this.fileExplorer.destroy();
-		this.versionViews.destroy();
+		this.fileExplorer?.destroy();
+		this.versionViews?.destroy();
 		this.settingTab = null;
+	}
+
+	async onExternalSettingsChange(): Promise<void> {
+		if (this.unloaded || !this.registry || !this.dataStore) {
+			return;
+		}
+
+		// Start capturing the bytes when Obsidian delivers the event, before
+		// waiting behind an earlier reload. Otherwise an earlier conflict
+		// write-back could overwrite a later external snapshot before its queued
+		// handler ever reads data.json. Preserve the registry base from the same
+		// moment so concurrent relationship edits remain recoverable; scalar
+		// settings use the freshest accepted base when this event reaches the queue.
+		const capturedRegistryBase = this.externalRegistryBaseTrusted
+			? cloneSeriesRecords(this.externalRegistryBase)
+			: [];
+		const rawSnapshot = this.loadData().then(
+			(value: unknown) => ({ ok: true as const, value }),
+			(error: unknown) => ({ error, ok: false as const }),
+		);
+		const operation = async (): Promise<void> => {
+			try {
+				const captured = await rawSnapshot;
+				if (!captured.ok) {
+					throw captured.error;
+				}
+				const raw: unknown = captured.value;
+				const incoming = normalizeExternalPluginData(raw);
+				if (!incoming) {
+					throw new Error(
+						'Synchronized data.json does not contain a complete Version series list.',
+					);
+				}
+				if (this.unloaded) {
+					return;
+				}
+
+				const protectedReplay = this.protectedExternalSnapshots.some(
+					(snapshot) => versionPluginDataEqual(snapshot, incoming),
+				);
+				const latestBase = normalizePluginData(
+					this.externalSettingsBase ?? this.dataStore.get(),
+				);
+				const mergeBase = normalizePluginData({
+					...latestBase,
+					series: capturedRegistryBase,
+				});
+				let reconciled: VersionSettings | null = null;
+				await this.registry.reload(async () => {
+					if (this.unloaded) {
+						throw new Error('Version unloaded during synchronized data reload.');
+					}
+					const next = await this.dataStore.reconcile(
+						mergeBase,
+						incoming,
+						(mergeBase, current, capturedIncoming) => {
+							if (this.unloaded) {
+								throw new Error(
+									'Version unloaded during synchronized data reload.',
+								);
+							}
+							return protectedReplay
+								? normalizePluginData(current)
+								: mergeExternalPluginData(
+									mergeBase,
+									current,
+									capturedIncoming,
+								);
+						},
+						versionPluginDataEqual,
+					);
+					reconciled = normalizePluginData(next);
+					return next.series;
+				});
+				if (!reconciled) {
+					throw new Error('Synchronized Version data was not reconciled.');
+				}
+				if (!versionPluginDataEqual(reconciled, incoming)) {
+					if (!protectedReplay) {
+						this.protectedExternalSnapshots.push(
+							normalizePluginData(incoming),
+						);
+						if (this.protectedExternalSnapshots.length > 8) {
+							this.protectedExternalSnapshots.shift();
+						}
+					}
+				}
+				// A rejected protected replay is not evidence that another device has
+				// accepted newer local edits, so it must not advance the merge base.
+				// Other successful reconciliations advance to the actual accepted or
+				// written snapshot; exact older inputs that lost a conflict remain
+				// protected above from regressing the registry on replay.
+				if (!protectedReplay) {
+					this.externalSettingsBase = normalizePluginData(reconciled);
+					this.externalRegistryBase = cloneSeriesRecords(incoming.series);
+					this.externalRegistryBaseTrusted = true;
+				}
+				if (this.unloaded) {
+					return;
+				}
+
+				this.i18n.setLanguage(this.settings.language);
+				this.settingTab?.refreshIfVisible();
+				this.editorSuggest.refreshLanguage();
+				this.refreshCommandNames();
+				this.scheduleUiRefresh();
+			} catch (error) {
+				if (!this.unloaded) {
+					new Notice(this.i18n.t('view.externalSettingsReloadFailed', {
+						message: error instanceof Error ? error.message : String(error),
+					}));
+				}
+			}
+		};
+		const result = this.externalSettingsQueue.then(operation, operation);
+		this.externalSettingsQueue = result.then(
+			() => undefined,
+			() => undefined,
+		);
+		return result;
 	}
 
 	async setLanguage(language: VersionLanguage): Promise<void> {
@@ -409,7 +554,21 @@ export default class VersionPlugin extends Plugin {
 	}
 
 	private async loadSettings(): Promise<void> {
-		this.settings = normalizePluginData(await this.loadData());
+		const raw: unknown = await this.loadData();
+		if (hasUnsupportedExplicitSchema(raw)) {
+			throw new Error(
+				'Version data.json uses an unsupported schema and was not loaded.',
+			);
+		}
+		this.settings = normalizePluginData(raw);
+		this.externalSettingsBase = normalizePluginData(this.settings);
+		this.externalRegistryBase = cloneSeriesRecords(this.settings.series);
+		// data.json has no cross-device causal revision. After a process restart,
+		// the first differing external registry may be an older device snapshot,
+		// so merge it as concurrent (empty ancestor) instead of authorizing silent
+		// relationship deletion or replacement. A successfully observed external
+		// snapshot establishes the in-memory base for the rest of this session.
+		this.externalRegistryBaseTrusted = false;
 		this.dataStore = new SerializedDataStore(
 			this.settings,
 			(next) => this.saveData(next),
@@ -469,7 +628,12 @@ export default class VersionPlugin extends Plugin {
 					// A uniquely resolved member of an incomplete relationship is
 					// still safe to reconcile exactly. Only an invalid/ambiguous
 					// relationship must remain fail-open without mutation.
-					if (group && group.status !== 'invalid' && member) {
+					if (
+						group &&
+						group.status !== 'invalid' &&
+						group.identityStatus === 'exact' &&
+						member
+					) {
 						this.renameEventQueue = this.renameEventQueue.then(
 							() => this.handleVaultDelete(group.id, member.version, file),
 							() => this.handleVaultDelete(group.id, member.version, file),
@@ -611,6 +775,8 @@ export default class VersionPlugin extends Plugin {
 			return;
 		}
 		try {
+			const oldPathWasRegistered = this.registry.getRecords().some((record) =>
+				record.slots.some((slot) => slot.member?.path === oldPath));
 			const membership = this.findRegisteredMembership(oldPath, file);
 			if (
 				membership?.version === 1 &&
@@ -618,7 +784,10 @@ export default class VersionPlugin extends Plugin {
 			) {
 				await this.moveCompanionsAfterV1(file, oldPath, membership.seriesId);
 			} else {
-				await this.registry.updateMemberPath(oldPath, file);
+				const updated = await this.registry.updateMemberPath(oldPath, file);
+				if (!updated && oldPathWasRegistered) {
+					throw new Error(this.i18n.t('view.repairVersions'));
+				}
 			}
 			this.refreshUi();
 		} catch (error) {
@@ -657,11 +826,11 @@ export default class VersionPlugin extends Plugin {
 	}
 
 	/**
-	 * The file explorer can only report the V1 move after it happened. Treat
-	 * that move as the user's intent to move the visible series: preflight every
-	 * companion destination, then move the physical files as one batch and save
-	 * the relationship once. On failure the unchanged old relationship makes any
-	 * incomplete physical rollback fail open instead of looking healthy.
+	 * The file explorer can only report the V1 move after it happened. Cascade
+	 * that move to companions only while the captured relationship remains
+	 * unique, healthy, and exact. If any member is compatible or unresolved, keep
+	 * every companion in place and reconcile only the V1 move when that single
+	 * identity can still be proven safely.
 	 */
 	private async moveCompanionsAfterV1(
 		v1: TFile,
@@ -669,23 +838,11 @@ export default class VersionPlugin extends Plugin {
 		seriesId: string,
 	): Promise<void> {
 		const movedV1Path = v1.path;
+		const group = this.registry.index.getGroupById(seriesId);
 		const record = this.registry.getRecordById(seriesId);
-		if (!record) {
-			const rollbackFailures = await rollbackSeriesMoves([{
-				alreadyMoved: true,
-				file: v1,
-				from: oldV1Path,
-				to: movedV1Path,
-			}], this.moveEnvironment(seriesId));
-			if (rollbackFailures > 0) {
-				throw new SeriesMoveError(
-					'Move failed and the V1 file requires manual repair.',
-					'manual-repair',
-					0,
-					rollbackFailures,
-				);
-			}
-			throw new Error('Version series could not be resolved safely.');
+		if (!record || !group || !isVersionGroupExactlyResolved(group)) {
+			await this.reconcileMovedV1Only(v1, oldV1Path, seriesId);
+			return;
 		}
 		const destinationFolder = parentPath(movedV1Path);
 		const plans: SeriesMovePlan[] = [];
@@ -697,22 +854,8 @@ export default class VersionPlugin extends Plugin {
 				? v1
 				: this.app.vault.getFileByPath(slot.member.path);
 			if (!file || !isVersionableFile(file) || !memberMatchesFile(slot.member, file)) {
-				const rollbackFailures = await rollbackSeriesMoves([{
-					alreadyMoved: true,
-					file: v1,
-					from: oldV1Path,
-					to: movedV1Path,
-				}], this.moveEnvironment(seriesId));
-				this.registry.rebuild();
-				if (rollbackFailures > 0) {
-					throw new SeriesMoveError(
-						'Move failed and the V1 file requires manual repair.',
-						'manual-repair',
-						0,
-						rollbackFailures,
-					);
-				}
-				throw new Error('Version series could not be resolved safely.');
+				await this.reconcileMovedV1Only(v1, oldV1Path, seriesId);
+				return;
 			}
 			const to = normalizePath(
 				destinationFolder
@@ -758,26 +901,59 @@ export default class VersionPlugin extends Plugin {
 		}
 	}
 
+	private async reconcileMovedV1Only(
+		v1: TFile,
+		oldV1Path: string,
+		seriesId: string,
+	): Promise<void> {
+		if (await this.registry.updateMemberPath(oldV1Path, v1)) {
+			return;
+		}
+		const current = this.findRegisteredMembership(v1.path, v1);
+		if (current?.seriesId === seriesId && current.version === 1) {
+			return;
+		}
+		throw new Error(this.i18n.t('view.repairVersions'));
+	}
+
 	private async moveSeriesFiles(
 		seriesId: string,
 		plans: SeriesMovePlan[],
 		recordOverride: VersionSeriesRecord | null = null,
 	): Promise<void> {
 		const record = recordOverride ?? this.registry.getRecordById(seriesId);
-		if (!record) {
+		const group = this.registry.index.getGroupById(seriesId);
+		if (!record || !group || !isVersionGroupExactlyResolved(group)) {
 			throw new Error('Version series could not be resolved safely.');
 		}
+		const expectedRevision = this.registry.getRevision();
 		try {
-			await executeSeriesMove(record, plans, this.moveEnvironment(seriesId));
+			await executeSeriesMove(
+				record,
+				plans,
+				this.moveEnvironment(seriesId, record, expectedRevision),
+			);
 		} finally {
 			this.registry.rebuild();
 		}
 	}
 
-	private moveEnvironment(seriesId: string) {
+	private moveEnvironment(
+		seriesId: string,
+		expectedSeries?: VersionSeriesRecord,
+		expectedRevision?: number,
+	) {
 		return {
+			canRollback: (plan: SeriesMovePlan) =>
+				(expectedRevision === undefined ||
+					this.registry.getRevision() === expectedRevision) &&
+				!this.registry.getRecords().some((record) =>
+					record.slots.some((slot) => slot.member?.path === plan.to)),
 			getAbstractFileByPath: (path: string) =>
 				this.app.vault.getAbstractFileByPath(path),
+			isPathRegistered: (path: string) =>
+				this.registry.getRecords().some((record) =>
+					record.slots.some((slot) => slot.member?.path === path)),
 			renameFile: (
 				file: TFile,
 				from: string,
@@ -785,7 +961,12 @@ export default class VersionPlugin extends Plugin {
 				rollback: boolean,
 			) => this.renamePhysicalFile(file, from, to, rollback),
 			saveSlots: (slots: VersionSlotRecord[]) =>
-				this.registry.saveSeriesSlots(seriesId, slots).then(() => undefined),
+				this.registry.saveSeriesSlots(
+					seriesId,
+					slots,
+					expectedSeries,
+					expectedRevision,
+				).then(() => undefined),
 		};
 	}
 
@@ -874,15 +1055,27 @@ export default class VersionPlugin extends Plugin {
 		group: VersionGroup,
 		initialFile: TFile | null = null,
 	): void {
+		const current = this.resolveExactGroup(group.id);
+		const expectedSeries = current
+			? this.registry.getRecordById(current.id)
+			: null;
+		if (!current || !expectedSeries) {
+			new Notice(this.i18n.t('view.repairVersions'));
+			return;
+		}
 		new DeleteVersionsModal(
 			this.app,
-			group,
+			current,
 			() => {
 				this.registry.rebuild();
 				this.refreshUi();
 			},
 			async (versions) => {
-				await this.registry.releaseVersionMembers(group.id, versions);
+				await this.registry.releaseVersionMembers(
+					current.id,
+					versions,
+					expectedSeries,
+				);
 			},
 			this.i18n,
 			initialFile?.path ?? null,
@@ -910,10 +1103,15 @@ export default class VersionPlugin extends Plugin {
 	}
 
 	private openMoveTheme(group: VersionGroup): void {
+		const current = this.resolveExactGroup(group.id);
+		if (!current) {
+			new Notice(this.i18n.t('view.repairVersions'));
+			return;
+		}
 		new MoveThemeModal(
 			this.app,
-			group,
-			(plans: MovePlan[]) => this.moveSeriesFiles(group.id, plans),
+			current,
+			(plans: MovePlan[]) => this.moveSeriesFiles(current.id, plans),
 			() => {
 				this.registry.rebuild();
 				this.refreshUi();
@@ -926,14 +1124,24 @@ export default class VersionPlugin extends Plugin {
 		group: VersionGroup,
 		initialFile: TFile | null,
 	): void {
+		const current = this.resolveExactGroup(group.id);
+		if (!current) {
+			new Notice(this.i18n.t('view.repairVersions'));
+			return;
+		}
 		new VersionFileActionsModal(
 			this.app,
-			group,
+			current,
 			initialFile,
-			(file) => this.openDeleteVersions(group, file),
-			(file) => this.openVersionManager(file, group.id),
-			() => this.openMoveTheme(group),
+			(file) => this.openDeleteVersions(current, file),
+			(file) => this.openVersionManager(file, current.id),
+			() => this.openMoveTheme(current),
 			(file) => this.openMergeTarget(file),
+			(file, version) => this.isCurrentExactVersionMember(
+				current.id,
+				file,
+				version,
+			),
 			this.i18n,
 		).open();
 	}
@@ -944,11 +1152,12 @@ export default class VersionPlugin extends Plugin {
 			return;
 		}
 
-		const sourceGroup = this.registry.index.getGroupForFile(source);
-		const sourceVersion = sourceGroup?.status === 'healthy'
-			? sourceGroup.versions.find((member) => member.path === source.path)
-			: null;
-		if (sourceVersion?.version === 1) {
+		const sourceExpectation = this.captureMergeFileExpectation(source);
+		if (!sourceExpectation) {
+			new Notice(this.i18n.t('view.repairVersions'));
+			return;
+		}
+		if (sourceExpectation.version === 1) {
 			new Notice(this.i18n.t('merge.v1Blocked'));
 			return;
 		}
@@ -957,7 +1166,12 @@ export default class VersionPlugin extends Plugin {
 			this.app,
 			this.registry.index,
 			source,
+			sourceExpectation,
 			this.i18n,
+			(file, expectation) => this.mergeFileExpectationStillMatches(
+				file,
+				expectation,
+			),
 			() => {
 				// Note Composer updates and trashes asynchronously through the
 				// Vault. Let those events settle before rebuilding the relation;
@@ -970,6 +1184,79 @@ export default class VersionPlugin extends Plugin {
 				}, 100);
 			},
 		).open();
+	}
+
+	private resolveExactGroup(seriesId: string): VersionGroup | null {
+		return this.registry.resolveExactlyMatchedGroup(seriesId);
+	}
+
+	private isCurrentExactVersionMember(
+		seriesId: string,
+		file: TFile,
+		version: number,
+	): boolean {
+		const group = this.resolveExactGroup(seriesId);
+		const member = group?.versions.find(
+			(candidate) => candidate.version === version,
+		);
+		const registeredMember = this.registry.getRecordById(seriesId)?.slots.find(
+			(slot) => slot.version === version && slot.member?.path === file.path,
+		)?.member;
+		return Boolean(
+			member?.file === file &&
+			this.app.vault.getFileByPath(file.path) === file &&
+			registeredMember &&
+			memberMatchesFile(registeredMember, file),
+		);
+	}
+
+	private captureMergeFileExpectation(
+		file: TFile,
+	): VersionMergeFileExpectation | null {
+		if (this.app.vault.getFileByPath(file.path) !== file) {
+			return null;
+		}
+		const registrations = this.registry.getRecords().flatMap((record) =>
+			record.slots.flatMap((slot) =>
+				slot.member?.path === file.path
+					? [{ seriesId: record.id, version: slot.version }]
+					: [],
+			),
+		);
+		if (registrations.length === 0) {
+			return { seriesId: null, version: null };
+		}
+		if (registrations.length !== 1) {
+			return null;
+		}
+		const registration = registrations[0];
+		const group = this.resolveExactGroup(registration.seriesId);
+		const member = group?.versions.find(
+			(candidate) => candidate.version === registration.version,
+		);
+		const registeredMember = this.registry
+			.getRecordById(registration.seriesId)
+			?.slots.find((slot) =>
+				slot.version === registration.version &&
+				slot.member?.path === file.path)
+			?.member;
+		return member?.file === file &&
+			registeredMember &&
+			memberMatchesFile(registeredMember, file)
+			? registration
+			: null;
+	}
+
+	private mergeFileExpectationStillMatches(
+		file: TFile,
+		expectation: VersionMergeFileExpectation,
+	): boolean {
+		const current = this.captureMergeFileExpectation(file);
+		return Boolean(
+			current &&
+			current.seriesId === expectation.seriesId &&
+			current.version === expectation.version,
+		);
 	}
 
 }

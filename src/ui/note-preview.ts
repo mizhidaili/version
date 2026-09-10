@@ -7,6 +7,10 @@ import {
 	setIcon,
 	TFile,
 } from 'obsidian';
+import {
+	createExcalidrawPreviewSvg,
+	isExcalidrawPreviewSource,
+} from '../excalidraw-preview';
 import { VersionI18n } from '../i18n';
 import { isMarkdownVersionFile } from '../version-file-types';
 
@@ -99,11 +103,36 @@ export class VersionNotePreview extends Component {
 			return;
 		}
 
-		if (
-			file.extension.toLocaleLowerCase() === 'canvas' ||
-			file.extension.toLocaleLowerCase() === 'excalidraw' ||
-			file.name.toLocaleLowerCase().endsWith('.excalidraw.md')
-		) {
+		if (isExcalidrawPreviewSource(file, source)) {
+			this.bodyEl.createDiv({
+				cls: 'version-note-preview-loading',
+				text: this.i18n.t('preview.loading'),
+			});
+			const hostWindow = this.bodyEl.ownerDocument.defaultView;
+			const svg = hostWindow
+				? await createExcalidrawPreviewSvg(this.app, file, hostWindow)
+				: null;
+			if (token !== this.renderToken) {
+				return;
+			}
+			this.bodyEl.empty();
+			if (!svg) {
+				this.bodyEl.createDiv({
+					cls: 'version-note-preview-empty',
+					text: this.i18n.t('preview.openVisual'),
+				});
+				return;
+			}
+			const rendered = this.bodyEl.createDiv({
+				cls: 'version-note-preview-excalidraw',
+			});
+			const adoptedSvg = this.bodyEl.ownerDocument.importNode(svg, true);
+			adoptedSvg.classList.add('version-note-preview-excalidraw-svg');
+			rendered.appendChild(adoptedSvg);
+			return;
+		}
+
+		if (file.extension.toLocaleLowerCase() === 'canvas') {
 			const link = this.app.fileManager.generateMarkdownLink(file, '');
 			await this.renderMarkdown(file, `!${link}`, '');
 			return;

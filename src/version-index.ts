@@ -1,6 +1,7 @@
 import { normalizePath, TFile, Vault } from 'obsidian';
 import {
 	memberMatchesFile,
+	memberResolvesToFile,
 	VersionSeriesRecord,
 	VersionSlotRecord,
 } from './version-data';
@@ -9,6 +10,7 @@ import { isVersionableFile } from './version-file-types';
 export const MAX_VERSION = 99;
 
 export type VersionSeriesStatus = 'healthy' | 'incomplete' | 'invalid';
+export type VersionIdentityStatus = 'exact' | 'compatible';
 
 export interface VersionFile {
 	file: TFile;
@@ -22,6 +24,7 @@ export interface VersionFile {
 export interface VersionGroup {
 	folder: string;
 	id: string;
+	identityStatus: VersionIdentityStatus;
 	key: string;
 	maximumVersion: number;
 	status: VersionSeriesStatus;
@@ -101,6 +104,7 @@ export class VersionIndex {
 		let status: VersionSeriesStatus = record.slots.length < 2
 			? 'invalid'
 			: 'healthy';
+		let identityStatus: VersionIdentityStatus = 'exact';
 		const versions: VersionFile[] = [];
 		const seenVersions = new Set<number>();
 		const seenPaths = new Set<string>();
@@ -126,10 +130,13 @@ export class VersionIndex {
 			if (
 				!file ||
 				!isVersionableFile(file) ||
-				!memberMatchesFile(slot.member, file)
+				!memberResolvesToFile(slot.member, file)
 			) {
 				status = status === 'invalid' ? 'invalid' : 'incomplete';
 				continue;
+			}
+			if (!memberMatchesFile(slot.member, file)) {
+				identityStatus = 'compatible';
 			}
 
 			versions.push({
@@ -160,6 +167,7 @@ export class VersionIndex {
 		return {
 			folder,
 			id: record.id,
+			identityStatus,
 			key: record.id,
 			maximumVersion: Math.max(0, ...seenVersions),
 			record,
@@ -168,6 +176,10 @@ export class VersionIndex {
 			versions,
 		};
 	}
+}
+
+export function isVersionGroupExactlyResolved(group: VersionGroup): boolean {
+	return group.status === 'healthy' && group.identityStatus === 'exact';
 }
 
 export function getOverallVersion(group: VersionGroup): VersionFile | null {

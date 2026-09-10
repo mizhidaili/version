@@ -12,11 +12,17 @@ Status values:
 - `public API limitation`: Obsidian exposes no stable public integration; the
   safe fallback is named.
 - `not verified`: configured or intended, but not acceptance-tested.
+- `external gate`: verified after the immutable source commit or tag exists;
+  source code cannot predeclare that external result.
 
-The current follow-up candidate is local-only. Source inspection, model tests,
-and static compatibility checks are recorded separately from live Obsidian UI
-acceptance. Evidence from earlier iterations remains historical and does not by
-itself accept the changed File Explorer, creation, backlink, or rail UI.
+This matrix distinguishes the published `0.2.1` baseline from the follow-up
+release candidate represented by the current source tree. A `main.js`-only
+canary was explicitly installed in an authorized user vault and the user
+accepted the reported physical-iPad grouping, add/manage control, and
+Excalidraw-preview fixes. That acceptance does not itself publish a release or
+close unrelated platform and stress-test rows below. Source inspection, model
+tests, static compatibility checks, canary installation, device acceptance,
+and GitHub publication remain separate evidence stages.
 
 ## Data and identity
 
@@ -25,13 +31,14 @@ itself accept the changed File Explorer, creation, backlink, or rail UI.
 | Every version is an independent supported vault file | done | Supported members are Markdown (including `.excalidraw.md`), Canvas, and legacy `.excalidraw`; records live outside file contents. The follow-up creation service prepares independent Markdown, Canvas, or Excalidraw files without adding a format field to the registry. |
 | Membership is never inferred from filenames | done | `VersionIndex` resolves only explicit series records. Iteration 018 verifies that `欢迎.md` remains V4 and filename syntax does not create a false gap. |
 | Member identity is conservative | done | Records store path, last-known name, and a ctime hint; same-path replacements and identity mismatches fail open instead of being silently adopted. |
+| Cross-device ctime precision compatibility | partial | A same-second whole-second/millisecond precision mismatch remains a healthy display/navigation relationship. Quick-create uses an append-only CAS that preserves every old slot byte-for-byte. Healthy compatible relationships retain the full Version management workflow through a one-shot revision/raw-series guard, while every retained old member keeps its original path and ctime. The affected real iCloud-backed relationship, persistent add action, and management entry were accepted on physical iPad. Destructive move, delete, and merge commands remain exact-identity only; the wider disposable-series concurrency matrix remains open. |
 | Arbitrary names and folders | done | Slots retain real member paths and filenames; V1's real filename represents the series in the File Explorer. |
 | Plugin disable leaves every supported member visible and readable | done | Iteration 013 disabled Version on a real Markdown/Canvas/Excalidraw series: rail, badge, and hiding disappeared; all members remained ordinary files. Evidence is macOS desktop, Obsidian 1.13.4. |
 | Missing or invalid relationship fails open | done | Only healthy groups are hidden and decorated; unresolved/invalid groups expose their files and repair entry. |
 | Rename/move while enabled updates identity-bound paths | partial | Rename handling is serialized and identity-checked; live happy paths and failure-focused model tests pass. Destructive collision, mid-batch failure, and rollback application matrices remain open. |
 | Rename/move while disabled is not guessed | done | A missing stored path remains unresolved; filename similarity never silently re-adopts a file. |
 | V1 cannot disappear while other members remain hidden | done | A series without a resolvable V1 is incomplete and therefore not aggregated. |
-| Dissolve a series without changing member files | done | Explicit confirmation removes relationship data only; every supported member remains intact. |
+| Stop version management without deleting or changing member files | done | Explicit confirmation removes only the relationship data. No file is deleted or has its content modified; released files may still move according to the configured destination. |
 
 ## Version management
 
@@ -48,7 +55,7 @@ itself accept the changed File Explorer, creation, backlink, or rail UI.
 | V1 replacement and one-member series | done | V1 cannot be cleared directly. Reducing an existing series to V1 requires dissolution confirmation; a new series requires two assigned files. |
 | Manage/create without an active file | done | The command opens a series picker or an empty management canvas. |
 | Keyboard/assistive alternative to pointer drag | done | Enter/Space supports pick-up/drop, Escape cancels, focus targets remain stable, and changes are announced. |
-| Physical touch/mobile management workflow | not verified | Earlier mobile emulation covered the previous candidate. The changed format controls, host-level rail lane, and File Explorer behavior still require current iPad-size emulation; physical iPad touch acceptance and Android remain unverified. |
+| Physical touch/mobile management workflow | partial | Physical iPad acceptance passed the persistent add action, conditional management entry, restored compatible-series manager access, version switching, and cancel/read-only flows reported in this cycle. Drag/reorder, every format-creation commit, destructive actions, narrow-layout stress, and Android remain separate open gates. |
 
 ## Editor and File Explorer
 
@@ -56,7 +63,7 @@ itself accept the changed File Explorer, creation, backlink, or rail UI.
 | --- | --- | --- |
 | V1 represents the series in the File Explorer | done | A healthy group hides V2+ and badges the real V1 row. |
 | Visible V1 representative retains the active marker for V2+ | done | Iteration 021 mirrors Obsidian's native `is-active` feedback onto the visible V1 title only while another registered member is active. Opening an unmanaged file, refreshing, or disabling Version removes the mirror without changing the hidden member's native state. |
-| File Explorer folding, virtualization, and failure visibility | partial | A healthy group now hides every mounted non-V1 by registered path even while the V1 DOM row is absent; V1 decoration resumes after remount. Invalid/incomplete groups still fail open. Model/static checks cover the plan and `data-path` observation; live folder folding, row reuse, reordering, and restart acceptance remain pending. |
+| File Explorer folding, virtualization, and failure visibility | partial | A healthy group hides every mounted non-V1 by registered path even while the V1 DOM row is absent; V1 decoration resumes after remount. Invalid/incomplete groups still fail open. The affected physical-iPad drawer grouping was accepted after restart, while exhaustive folder folding, recycled-row ordering, and large-tree stress remain pending. |
 | Same leaf switches exact registered member files | done | The rail calls `leaf.openFile` for real Markdown, Canvas, or Excalidraw members. |
 | Every opened member keeps its real tab and inline title | done | No virtual or unified title replacement is active. |
 | Markdown, Canvas, and Excalidraw rails grow from the top | partial | The follow-up CSS centralizes one outer-edge anchor, top anchor, 32px face-and-hit width, and 96px height. Every supported public content host reserves `face width - 1px overlap`, so the painted face reaches the outer pane divider while the one-pixel overlap removes the host seam at its inner edge. No private drawing descendant is selected or restyled. After a real disable/enable reload on Obsidian 1.13.7 with dark AnuPpuccin, Markdown V1, Canvas V2, and Excalidraw V4 active fills all occupied screenshot x=1040..1066; after subtracting the 109px slot step, their active tops normalize to y=93..94. At the Excalidraw V4 midline, white content continued through x=1038, x=1039 was light antialias rather than a dark seam, the face began at x=1040, and its outer antialias at x=1067 directly met the divider/sidebar beginning at x=1068. Canvas controls remained visibly left of the face, and the adjacent Excalidraw library control was opened and closed successfully. Other themes, zoom levels, scrollbar modes, narrow panes, and iPad remain pending; the narrower horizontal hit width especially needs touch acceptance. |
@@ -75,7 +82,7 @@ itself accept the changed File Explorer, creation, backlink, or rail UI.
 | Exact-version link targets the real member | done | Version selection and displayed alias remain independent. |
 | Version link command shows one topic, then Overall/V1… | done | The explicit **Insert Version link** command is runtime-verified. |
 | Reliably replace or outrank the core `[[` suggester | public API limitation | Suggester priority is not public. The explicit Version link command is the stable fallback. |
-| Obsidian-styled rendered previews with nested links | done | Version-owned surfaces use public `MarkdownRenderer`, host classes/variables, delayed top-level hover, nested previews, and format-aware visual fallbacks; they do not claim Obsidian's private popover stack. |
+| Obsidian-styled rendered previews with nested links | done | Version-owned surfaces use public `MarkdownRenderer`, host classes/variables, delayed top-level hover, nested previews, and format-aware visual fallbacks. A physical-iPad canary accepted SVG preview of an Excalidraw drawing stored in an ordinary `.md` container identified by its root `excalidraw-plugin` frontmatter; ordinary Markdown remained separate. The implementation does not claim Obsidian's private popover stack. |
 | Theme-level backlink calculation | partial | Resolved links are grouped one row per real source path and attributed to the registry-mapped target versions with per-version counts, without guessing from aliases. Model tests cover path attribution and numeric ordering; current modal rendering/click acceptance remains pending. |
 | Aggregate the native core Backlinks pane itself | public API limitation | No supported API replaces the core pane's current-file target set; Version provides its own stable aggregate view/command. |
 
@@ -96,14 +103,14 @@ itself accept the changed File Explorer, creation, backlink, or rail UI.
 
 | Requirement | Status | Evidence / remaining work |
 | --- | --- | --- |
-| English, Simplified Chinese, Danish, and Japanese UI | done | 223 typed keys have exact key and placeholder parity across all four locales, including format selection and localized Excalidraw dependency failures. |
+| English, Simplified Chinese, Danish, and Japanese UI | done | 226 typed keys have exact key and placeholder parity across all four locales, including format selection, synchronized-data reload failures, identity-conflict states, and localized Excalidraw dependency failures. |
 | Human-native Danish/Japanese publication proofread | not verified | Engineering and focused linguistic Judges pass; independent native publication proofread remains advisable before release. |
 | Theme variables and pinned compatibility matrix | partial | Static checks confirm Version-scoped selectors, Obsidian color variables, no reviewed class collisions, one shared public-host outer-edge lane, and no Canvas/Excalidraw private-descendant selectors against the pinned plugins/theme. The current rail candidate now has targeted dark AnuPpuccin Markdown/Canvas/Excalidraw screenshots, pixel checks, and an adjacent Excalidraw toolbar click check; light/default/other community themes, zoom, scrollbar-mode, and iPad-size acceptance remain pending. |
 | Offline, no telemetry, no account | done | Static audit finds no network, telemetry, registration, or account code. |
-| README matches current architecture and API boundaries | partial | The bilingual README preserves independent-file readability, explicit membership, mixed-format support, and fail-open behavior. It has not yet been revised as final publication evidence for the changed follow-up UI, so the acceptance matrix remains authoritative for current-candidate gates. |
-| Final publication README contract | partial | Community install route, public support URL, chosen license, verified minimum app version, and final platform declaration remain pending. |
-| Automated model/registry/i18n tests | done | Current `npm test` passes its model/registry suite and verifies 223 keys across four locales. The exact model assertion total is emitted by the runner rather than duplicated here. This is not a substitute for an Obsidian lifecycle runner. |
-| Current follow-up candidate runtime UI | not verified | Version Dev was disabled and re-enabled with the current bundle. Targeted Markdown/Canvas/Excalidraw switching passed the fixed face-coordinate, common top-anchor, no-inner-gap, and toolbar-separation screenshot checks. The changed creation controls, backlink target lines, folded-folder/remount behavior, native-scrollbar interaction, overflow cues, and the wider theme/zoom/iPad rail matrix still await final human acceptance. Earlier cumulative UI evidence is historical only for those remaining gates. |
+| README matches current architecture and API boundaries | done | The bilingual README documents independent-file readability, explicit membership, mixed-format support, fail-open behavior, persistent quick-create, conditional Version management, and staged cancellation. |
+| Final publication README contract | done | The current Community Plugins installation route, public Issues URL, MIT license, minimum app version, and honestly bounded platform statement are present in both languages. |
+| Automated model/registry/i18n tests | done | Current `npm test` passes its model/registry suite and verifies 226 keys across four locales. The exact model assertion total is emitted by the runner rather than duplicated here. This is not a substitute for an Obsidian lifecycle runner. |
+| Current follow-up candidate runtime UI | partial | Version Dev was disabled and re-enabled with the current bundle. Targeted Markdown/Canvas/Excalidraw switching passed the fixed face-coordinate, common top-anchor, no-inner-gap, and toolbar-separation screenshot checks. The latest physical-iPad canary was accepted for the reported grouping, add/manage/menu, switching, and Excalidraw long-press preview defects. Backlink rendering, native-scrollbar stress, overflow cues, and the wider theme/zoom/device matrix remain bounded residual gates. |
 | Separate three-file clean-vault smoke on Obsidian 1.11.5 | partial | Iteration 017 loaded, enabled, disabled, and re-enabled an older exact bundle (`main.js` `914a…`, `styles.css` `62e5…`, manifest `dc1a…`) with no console/network errors. The current candidate now requires Obsidian 1.13.4 and has different exact assets; the old smoke is historical evidence only and cannot freeze the current release payload. |
 
 ## Release readiness
@@ -113,9 +120,9 @@ itself accept the changed File Explorer, creation, backlink, or rail UI.
 | Current community runtime assets build | partial | The integrated local candidate passes `npm run build`, the model/i18n suite, lint, and the pinned static compatibility audit. The enabled Version Dev vault's schema-3 registry resolves 2 series / 8 members across Markdown, Canvas, and Excalidraw Markdown with matching file identities, while `data.json` and all version metadata remain unchanged. A live Obsidian reload and targeted rail geometry check pass; the remaining UI matrix is still pending, so this is not a frozen release payload. |
 | Frozen current three-file clean install/disable/uninstall | not verified | Repeat on the exact immutable candidate, then repeat from uploaded Release assets; verify all mixed members remain ordinary and accessible after disable/uninstall. |
 | `minAppVersion: 1.13.4` | done | `manifest.json` and `versions.json` now match the exact Obsidian desktop version used for the current acceptance cycle; no older minimum is claimed. |
-| Mobile availability (`isDesktopOnly: false`) | partial | The manifest remains mobile-capable, but the changed follow-up UI still requires current iPad-size emulation and physical iPad acceptance. Android remains explicitly untested. |
+| Mobile availability (`isDesktopOnly: false`) | partial | The manifest remains mobile-capable and the current reported flows passed physical-iPad acceptance. Android and the full iPad orientation/zoom/stress matrix remain explicitly untested. |
 | Root open-source license | done | Root `LICENSE` contains the MIT License with copyright `2026 Ikue`. |
-| Public source repository | missing | No accepted immutable public source revision/repository chain exists. |
-| Exact-version tag and GitHub Release | missing | No public tag/Release contains the exact three runtime assets. |
-| `Version` name / `version` ID availability | not verified | Recheck immediately before submission; the generic name may require reviewer discussion, but must not be silently changed. |
-| Community reviewer acceptance | not verified | No Community Plugins submission has been made, as required by the current development scope. |
+| Public `0.2.1` source, tag, and GitHub Release | done | `mizhidaili/version` publishes commit `c686772062d816e1a951173e99eb668bb23efa6d` under the exact tag `0.2.1`; its non-draft, non-prerelease Release was published on 2026-09-03. This is the stable baseline, not the current canary payload. |
+| Current release-candidate GitHub publication | external gate | Commit, exact tag, draft asset verification, and public Release must be checked after the immutable release commit exists. A user-vault canary is device evidence, not publication evidence. |
+| `Multi-Version Notes` name / `version` ID availability | done | The existing official Community Plugins entry uses repository `mizhidaili/version` and plugin ID `version`; this release does not rename either value. |
+| Community directory listing | done | The plugin is already present in Obsidian's Community Plugins index, so an update uses the normal exact-tag Release path. This status does not claim that Obsidian staff performed a code audit. |
