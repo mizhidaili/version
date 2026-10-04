@@ -4,6 +4,25 @@
 
 > Let one topic hold multiple parallel texts that can coexist, evolve, and remain editable over time.
 
+## Preview / 界面预览
+
+### Switch versions / 切换版本
+
+Use the tabs at the right edge to switch between editable versions of the same topic.  
+通过编辑区右缘的页签，在同一主题的多个可编辑版本之间切换。
+
+![Version tabs V1, V2, and V3 at the right edge, with V3 selected / 编辑区右缘的 V1、V2、V3 版本页签，当前选中 V3](https://raw.githubusercontent.com/mizhidaili/version/main/docs/images/multi-version-notes-version-tabs.png)
+
+### Manage versions / 管理版本
+
+Bring related files together and arrange their version numbers in one place.  
+在同一个管理窗口中关联文件、调整版本顺序。
+
+![Manage versions dialog showing three test files assigned to Version 1, Version 2, and Version 3 / 版本管理窗口，三个测试文件分别对应版本 1、版本 2 和版本 3](https://raw.githubusercontent.com/mizhidaili/version/main/docs/images/multi-version-notes-manage-versions.png)
+
+These screenshots use test notes and a custom Obsidian theme. The plugin provides the version controls; colors, fonts, and the surrounding appearance depend on your theme and settings.  
+截图使用测试笔记及自定义 Obsidian 主题。插件提供版本控件；配色、字体和周边界面外观取决于你的主题与设置。
+
 ## English
 
 ### What is Multi-Version Notes?
