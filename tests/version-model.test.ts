@@ -5815,6 +5815,15 @@ await rebuiltDeleteRegistry.recordDeletedMember('rebuilt-delete', 2, removedFile
 equal(rebuiltDeleteRegistry.getRecordById('rebuilt-delete'), null, 'confirmed sole companion deletion removes the stale two-slot series');
 check(rebuiltDeleteVault.getFileByPath('Delete/Topic.md'), 'V1 survives as an ordinary file');
 
+const invalidDeleteRegistry = new VersionRegistry(rebuiltDeleteVault, [{
+	id: 'invalid-delete', slots: [
+		{ version: 1, member: rebuiltDeleteRecords[0].slots[0].member },
+		{ version: 2, member: rebuiltDeleteRecords[0].slots[1].member },
+		{ version: 1, member: null },
+	],
+}], async () => {});
+equal(invalidDeleteRegistry.findDeletedMembership(removedFile), null, 'an invalid series cannot authorize automatic deletion reconciliation');
+
 }
 
 const legacyIdentityVault = new Vault([

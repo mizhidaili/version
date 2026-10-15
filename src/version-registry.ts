@@ -886,10 +886,15 @@ export class VersionRegistry {
 			slot.member?.path === file.path ? [{ series, slot }] : []));
 		if (owners.length !== 1) return null;
 		const { series, slot } = owners[0];
+		const versions = new Set(series.slots.map((candidate) => candidate.version));
+		const paths = series.slots.flatMap((candidate) => candidate.member ? [candidate.member.path] : []);
 		if (
 			!slot.member || !memberMatchesFile(slot.member, file) ||
 			this.records.filter((record) => record.id === series.id).length !== 1 ||
-			series.slots.filter((candidate) => candidate.version === slot.version).length !== 1
+			series.slots.length < 2 || !versions.has(1) || versions.size !== series.slots.length ||
+			new Set(paths).size !== paths.length ||
+			series.slots.some((candidate) => !Number.isInteger(candidate.version) ||
+				candidate.version < 1 || candidate.version > MAX_VERSION)
 		) return null;
 		return { seriesId: series.id, version: slot.version };
 	}
