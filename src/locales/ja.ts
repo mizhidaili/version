@@ -268,7 +268,7 @@ export const JA: Record<TranslationKey, string> = {
 	'view.rollbackFailed':
 		'登録に失敗した後、新しく作成した空ファイル（{{path}}）を削除できませんでした。ファイルは表示されたままで、引き続き読めます。',
 	'view.registryUpdateFailed':
-		'ファイルの移動または名前変更後にバージョンの関連付けを更新できませんでした。影響を受けたファイルはすべて表示されたままです。{{message}}',
+		'移動または名前変更後、一部のバージョンの関連付けを更新できませんでした。確認できないファイルは表示されたままです。{{message}}',
 	'view.identityMigrationFailed':
 		'以前のメンバーファイルの識別情報を確認できませんでした。影響を受けたファイルは表示されたままです。バージョン管理を開いて関連付けを修復してください。{{message}}',
 	'view.externalSettingsReloadFailed':

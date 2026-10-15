@@ -277,7 +277,7 @@ const EN = {
 	'view.rollbackFailed':
 		'Could not remove the newly created blank file at {{path}} after registration failed. It remains visible and readable.',
 	'view.registryUpdateFailed':
-		'The Version relationship could not be updated after the file moved or was renamed. All affected files remain visible. {{message}}',
+		'Some Version relationships could not be updated after the move or rename. Unresolved files remain visible. {{message}}',
 	'view.identityMigrationFailed':
 		'Version could not verify older member identities. Affected files remain visible; open Version management to repair the relationship. {{message}}',
 	'view.externalSettingsReloadFailed':
@@ -543,7 +543,7 @@ const ZH: Record<TranslationKey, string> = {
 	'view.rollbackFailed':
 		'版本登记失败后，无法移除新建的空白文件 {{path}}；它仍然可见且可以正常读取。',
 	'view.registryUpdateFailed':
-		'文件移动或重命名后，Version 关系无法保存；受影响的文件将保持可见。{{message}}',
+		'移动或重命名后，部分版本关系未能更新；未能确认的文件将保持可见。{{message}}',
 	'view.identityMigrationFailed':
 		'Version 无法核验旧版成员身份；受影响的文件将保持可见。请打开版本管理修复关系。{{message}}',
 	'view.externalSettingsReloadFailed':

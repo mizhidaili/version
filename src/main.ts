@@ -43,6 +43,7 @@ import {
 } from './series-move-transaction';
 import { setMenuItemWarning } from './menu-item-warning';
 import { renameAndWaitForExactDestination } from './file-rename-completion';
+import { FolderPathChange, mapFolderChanges, waitForFolderRenameTargets } from './folder-rename-batch';
 import {
 	canMergeWithNoteComposer,
 	replaceNoteComposerMenuAction,
@@ -90,8 +91,8 @@ export default class VersionPlugin extends Plugin {
 	private readonly internalRenamePaths = new Set<string>();
 	private readonly incompleteDeleteNoticeTimers = new Map<string, number>();
 	private readonly delayedUiRefreshTimers = new Set<number>();
-	private readonly folderRenameCleanupTimers = new Set<number>();
-	private readonly pendingFolderRenames: FolderRenameObservation[] = [];
+	private readonly pendingFolderRenames: FolderPathChange[] = [];
+	private folderRenameScheduled = false;
 	private externalSettingsQueue: Promise<void> = Promise.resolve();
 	private renameEventQueue: Promise<void> = Promise.resolve();
 	private readonly localizedCommands = new Map<
@@ -354,10 +355,6 @@ export default class VersionPlugin extends Plugin {
 			window.clearTimeout(timer);
 		}
 		this.delayedUiRefreshTimers.clear();
-		for (const timer of this.folderRenameCleanupTimers) {
-			window.clearTimeout(timer);
-		}
-		this.folderRenameCleanupTimers.clear();
 		this.pendingFolderRenames.length = 0;
 		for (const timer of this.incompleteDeleteNoticeTimers.values()) {
 			window.clearTimeout(timer);
@@ -621,22 +618,11 @@ export default class VersionPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on('delete', (file) => {
 				if (file instanceof TFile) {
-					const group = this.registry.index.getGroupForFile(file);
-					const member = group?.versions.find(
-						(versionFile) => versionFile.file === file,
-					);
-					// A uniquely resolved member of an incomplete relationship is
-					// still safe to reconcile exactly. Only an invalid/ambiguous
-					// relationship must remain fail-open without mutation.
-					if (
-						group &&
-						group.status !== 'invalid' &&
-						group.identityStatus === 'exact' &&
-						member
-					) {
+					const member = this.registry.findDeletedMembership(file);
+					if (member) {
 						this.renameEventQueue = this.renameEventQueue.then(
-							() => this.handleVaultDelete(group.id, member.version, file),
-							() => this.handleVaultDelete(group.id, member.version, file),
+							() => this.handleVaultDelete(member.seriesId, member.version, file),
+							() => this.handleVaultDelete(member.seriesId, member.version, file),
 						);
 					} else {
 						this.registry.rebuild();
@@ -652,14 +638,16 @@ export default class VersionPlugin extends Plugin {
 					return;
 				}
 				if (file instanceof TFolder) {
-					const observation = this.captureFolderRename(file, oldPath);
-					if (!observation) {
-						return;
+					const change = { oldPath: normalizePath(oldPath), newPath: normalizePath(file.path) };
+					if (!change.oldPath || !change.newPath || change.oldPath === change.newPath) return;
+					this.pendingFolderRenames.push(change);
+					if (!this.folderRenameScheduled) {
+						this.folderRenameScheduled = true;
+						this.renameEventQueue = this.renameEventQueue.then(
+							() => this.handleVaultFolderRenames(),
+							() => this.handleVaultFolderRenames(),
+						);
 					}
-					this.renameEventQueue = this.renameEventQueue.then(
-						() => this.handleVaultFolderRename(observation),
-						() => this.handleVaultFolderRename(observation),
-					);
 					return;
 				}
 				if (
@@ -671,7 +659,8 @@ export default class VersionPlugin extends Plugin {
 				// Obsidian emits descendant TFile events after a TFolder move. They
 				// are already covered by the prefix transaction and must never be
 				// interpreted as an independent V1 whole-series move.
-				if (this.findCoveringFolderRename(oldPath, file.path)) {
+				if (this.pendingFolderRenames.length > 0 &&
+					mapFolderChanges(oldPath, this.pendingFolderRenames) === file.path) {
 					return;
 				}
 				this.renameEventQueue = this.renameEventQueue.then(
@@ -682,73 +671,37 @@ export default class VersionPlugin extends Plugin {
 		);
 	}
 
-	private captureFolderRename(
-		folder: TFolder,
-		oldPath: string,
-	): FolderRenameObservation | null {
-		const normalizedOld = normalizePath(oldPath);
-		const normalizedNew = normalizePath(folder.path);
-		if (!normalizedOld || !normalizedNew || normalizedOld === normalizedNew) {
-			return null;
-		}
-		const observation = {
-			newPath: normalizedNew,
-			oldPath: normalizedOld,
-		};
-		this.pendingFolderRenames.push(observation);
-		const timer = window.setTimeout(() => {
-			this.folderRenameCleanupTimers.delete(timer);
-			const index = this.pendingFolderRenames.indexOf(observation);
-			if (index >= 0) {
-				this.pendingFolderRenames.splice(index, 1);
-			}
-		}, 2_000);
-		this.folderRenameCleanupTimers.add(timer);
-		return observation;
-	}
-
-	private findCoveringFolderRename(
-		oldFilePath: string,
-		newFilePath: string,
-	): FolderRenameObservation | null {
-		return [...this.pendingFolderRenames]
-			.sort((left, right) => right.oldPath.length - left.oldPath.length)
-			.find((observation) =>
-				mapFolderChildPath(
-					oldFilePath,
-					observation.oldPath,
-					observation.newPath,
-				) === normalizePath(newFilePath),
-			) ?? null;
-	}
-
-	private async handleVaultFolderRename(
-		observation: FolderRenameObservation,
-	): Promise<void> {
-		if (this.unloaded) {
-			return;
-		}
-		// At the leading TFolder event Obsidian still exposes descendants at
-		// their old paths. The matching TFile events arrive as one sub-millisecond
-		// burst, so yield one short task before validating the final prefix state.
-		await new Promise<void>((resolve) => window.setTimeout(resolve, 24));
-		if (this.unloaded) {
-			return;
-		}
+	private async handleVaultFolderRenames(): Promise<void> {
 		try {
-			await this.registry.reconcileFolderRename(
-				observation.oldPath,
-				observation.newPath,
-			);
-			this.refreshUi();
-		} catch (error) {
-			this.registry.rebuild();
-			this.refreshUi();
-			if (!this.unloaded) {
-				new Notice(this.i18n.t('view.registryUpdateFailed', {
-					message: error instanceof Error ? error.message : String(error),
-				}));
+			while (this.pendingFolderRenames.length > 0 && !this.unloaded) {
+				const changes = await waitForFolderRenameTargets({
+					getChanges: () => [...this.pendingFolderRenames],
+					isReady: (changes) => this.registry.folderRenameTargetsReady(changes),
+					isStopped: () => this.unloaded,
+					wait: () => new Promise<void>((resolve) => window.setTimeout(resolve, 50)),
+				});
+				if (this.unloaded) return;
+				try {
+					const result = await this.registry.reconcileFolderRenames(changes);
+					if (result.unresolvedPaths.length > 0) {
+						new Notice(this.i18n.t('view.registryUpdateFailed', {
+							message: result.unresolvedPaths.join('\n'),
+						}));
+					}
+				} catch (error) {
+					if (!this.unloaded) new Notice(this.i18n.t('view.registryUpdateFailed', {
+						message: error instanceof Error ? error.message : String(error),
+					}));
+				} finally {
+					// Keep suppression throughout settlement and persistence. Changes
+					// arriving during the save form the next batch in the same queue.
+					this.pendingFolderRenames.splice(0, changes.length);
+					this.registry.rebuild();
+					if (!this.unloaded) this.refreshUi();
+				}
 			}
+		} finally {
+			this.folderRenameScheduled = false;
 		}
 	}
 
@@ -774,6 +727,10 @@ export default class VersionPlugin extends Plugin {
 		if (this.unloaded) {
 			return;
 		}
+		// A descendant notification can precede its folder notification but wait
+		// in this queue until after that folder has been observed.
+		if (this.pendingFolderRenames.length > 0 &&
+			mapFolderChanges(oldPath, this.pendingFolderRenames) === file.path) return;
 		try {
 			const oldPathWasRegistered = this.registry.getRecords().some((record) =>
 				record.slots.some((slot) => slot.member?.path === oldPath));
@@ -1280,24 +1237,4 @@ const LOCALIZED_COMMAND_NAMES: LocalizedCommandNames = {
 function parentPath(path: string): string {
 	const separator = path.lastIndexOf('/');
 	return separator < 0 ? '' : path.slice(0, separator);
-}
-
-interface FolderRenameObservation {
-	newPath: string;
-	oldPath: string;
-}
-
-function mapFolderChildPath(
-	path: string,
-	oldFolderPath: string,
-	newFolderPath: string,
-): string | null {
-	const normalizedPath = normalizePath(path);
-	const prefix = `${oldFolderPath}/`;
-	if (!normalizedPath.startsWith(prefix)) {
-		return null;
-	}
-	return normalizePath(
-		`${newFolderPath}/${normalizedPath.slice(prefix.length)}`,
-	);
 }

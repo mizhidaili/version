@@ -47,6 +47,7 @@ import {
 } from '../src/series-move-transaction';
 import { setMenuItemWarning } from '../src/menu-item-warning';
 import { renameAndWaitForExactDestination } from '../src/file-rename-completion';
+import { mapFolderChanges, waitForFolderRenameTargets, FolderPathChange } from '../src/folder-rename-batch';
 import {
 	pruneManagedFileMenu,
 	resetManagedFileMenu,
@@ -5580,7 +5581,7 @@ folderRenameMock.rename(
 	'New/Nested/Sketch.excalidraw.md',
 );
 equal(
-	await folderRenameRegistry.reconcileFolderRename('Old', 'New'),
+	(await folderRenameRegistry.reconcileFolderRename('Old', 'New')).updatedMembers,
 	4,
 	'folder reconciliation updates every exact registered descendant',
 );
@@ -5638,10 +5639,9 @@ const failedFolderMock = failedFolderVault as unknown as InstanceType<typeof Vau
 failedFolderMock.rename('Before/V1.md', 'After/V1.md');
 failedFolderMock.delete('Before/V2.md');
 failedFolderMock.add('After/V2.md', 'replacement');
-await assert.rejects(
-	() => failedFolderRegistry.reconcileFolderRename('Before', 'After'),
-	/could not be verified/u,
-);
+const rejectedFolderResult = await failedFolderRegistry.reconcileFolderRename('Before', 'After');
+equal(rejectedFolderResult.updatedMembers, 0, 'a replaced series has no adopted members');
+assert.deepEqual(rejectedFolderResult.unresolvedPaths, ['After/V2.md']);
 assertions += 1;
 equal(
 	failedFolderPersistCount,
@@ -5658,6 +5658,164 @@ equal(
 	'incomplete',
 	'a failed folder transaction remains fail-open and visible',
 );
+
+{
+// A stale deleted version in one series must not strand a healthy sibling
+// series whose files span multiple levels of the moved directory.
+const isolatedMoveVault = new Vault([
+	'Root/Stale.md', 'Root/Deleted.md', 'Root/Nested/Topic.md',
+	'Root/Nested/Parallel.canvas', 'Root/Diagram.excalidraw.md',
+]) as unknown as Vault;
+const isolatedMock = isolatedMoveVault as unknown as InstanceType<typeof Vault>;
+const isolatedRecords = [
+	{ id: 'stale', slots: ['Root/Stale.md', 'Root/Deleted.md'].map((path, i) =>
+		({ version: i + 1, member: memberAt(isolatedMoveVault, path) })) },
+	{ id: 'independent', slots: ['Root/Nested/Topic.md', 'Root/Nested/Parallel.canvas', 'Root/Diagram.excalidraw.md'].map((path, i) =>
+		({ version: i + 1, member: memberAt(isolatedMoveVault, path) })) },
+];
+let isolatedSaves = 0;
+const isolatedRegistry = new VersionRegistry(isolatedMoveVault, isolatedRecords, async () => { isolatedSaves++; });
+isolatedMock.delete('Root/Deleted.md');
+for (const path of ['Root/Stale.md', 'Root/Nested/Topic.md', 'Root/Nested/Parallel.canvas', 'Root/Diagram.excalidraw.md']) {
+	isolatedMock.rename(path, `Archive/${path}`);
+}
+const isolatedResult = await isolatedRegistry.reconcileFolderRename('Root', 'Archive/Root');
+equal(isolatedResult.updatedMembers, 3, 'a stale series does not veto independent descendants');
+equal(isolatedSaves, 1, 'verified series share one durable commit');
+equal(isolatedRegistry.index.getGroupById('independent')?.status, 'healthy', 'nested and direct children stay together');
+assert.deepEqual(isolatedRegistry.getRecordById('stale'), isolatedRecords[0], 'failed series retains every original slot for repair');
+assertions++;
+equal((await isolatedRegistry.reconcileFolderRename('Root/Nested', 'Archive/Root/Nested')).updatedMembers, 0, 'duplicate nested notifications are idempotent');
+equal(isolatedSaves, 1, 'duplicate events do not save again');
+
+// Chained moves are interpreted in observation order, even if a descendant
+// exits the original parent or two folders exchange their names.
+const chainChanges = [
+	{ oldPath: 'A', newPath: 'Temporary' },
+	{ oldPath: 'B', newPath: 'A' },
+	{ oldPath: 'Temporary', newPath: 'B' },
+	{ oldPath: 'B/Nested', newPath: 'Outside' },
+];
+equal(mapFolderChanges('A/Nested/Topic.md', chainChanges), 'Outside/Topic.md', 'nested move follows the entire chain');
+equal(mapFolderChanges('B/Other.md', chainChanges), 'A/Other.md', 'folder-name reuse does not swap identities');
+equal(mapFolderChanges('A copy/Keep.md', chainChanges), 'A copy/Keep.md', 'prefix boundaries remain exact');
+const chainVault = new Vault(['A/Nested/Topic.md', 'A/V2.md', 'B/Topic.md', 'B/V2.md']) as unknown as Vault;
+const chainMock = chainVault as unknown as InstanceType<typeof Vault>;
+const chainRecords = [
+	{ id: 'chain-a', slots: ['A/Nested/Topic.md', 'A/V2.md'].map((path, i) => ({ version: i + 1, member: memberAt(chainVault, path) })) },
+	{ id: 'chain-b', slots: ['B/Topic.md', 'B/V2.md'].map((path, i) => ({ version: i + 1, member: memberAt(chainVault, path) })) },
+];
+const chainRegistry = new VersionRegistry(chainVault, chainRecords, async () => {});
+chainMock.rename('A/Nested/Topic.md', 'Temporary/Nested/Topic.md');
+chainMock.rename('A/V2.md', 'Temporary/V2.md');
+chainMock.rename('B/Topic.md', 'A/Topic.md');
+chainMock.rename('B/V2.md', 'A/V2.md');
+chainMock.rename('Temporary/Nested/Topic.md', 'Outside/Topic.md');
+chainMock.rename('Temporary/V2.md', 'B/V2.md');
+equal((await chainRegistry.reconcileFolderRenames(chainChanges)).updatedMembers, 4, 'a chained batch commits all verified destinations once');
+equal(chainRegistry.index.getGroupById('chain-a')?.status, 'healthy', 'first swapped group remains healthy');
+equal(chainRegistry.index.getGroupById('chain-b')?.status, 'healthy', 'second swapped group remains healthy');
+
+// Destination claims in damaged records still protect ownership. A conflict
+// or precision mismatch cannot be treated as proof that a file is the member.
+const conflictVault = new Vault(['From/A.md', 'From/B.md', 'Other/C.md', 'Safe/V1.md', 'Safe/V2.md']) as unknown as Vault;
+const conflictMock = conflictVault as unknown as InstanceType<typeof Vault>;
+const conflictRecords = [
+	{ id: 'moving', slots: ['From/A.md', 'From/B.md'].map((path, i) => ({ version: i + 1, member: memberAt(conflictVault, path) })) },
+	{ id: 'claim', slots: [
+		{ version: 1, member: { ...memberAt(conflictVault, 'Other/C.md'), path: 'To/A.md' } },
+		{ version: 2, member: memberAt(conflictVault, 'Other/C.md') },
+	] },
+	{ id: 'safe', slots: ['Safe/V1.md', 'Safe/V2.md'].map((path, i) => ({ version: i + 1, member: memberAt(conflictVault, path) })) },
+];
+const conflictRegistry = new VersionRegistry(conflictVault, conflictRecords, async () => {});
+for (const p of ['From/A.md', 'From/B.md']) conflictMock.rename(p, p.replace('From/', 'To/'));
+for (const p of ['Safe/V1.md', 'Safe/V2.md']) conflictMock.rename(p, p.replace('Safe/', 'MovedSafe/'));
+const conflictResult = await conflictRegistry.reconcileFolderRenames([{ oldPath: 'From', newPath: 'To' }, { oldPath: 'Safe', newPath: 'MovedSafe' }]);
+equal(conflictResult.updatedMembers, 2, 'a conflict blocks only the affected series');
+assert.deepEqual(conflictRegistry.getRecordById('moving'), conflictRecords[0]); assertions++;
+
+const retainedClaimVault = new Vault(['First/V1.md', 'First/Missing.md', 'Second/V1.md', 'Second/V2.md']) as unknown as Vault;
+const retainedClaimMock = retainedClaimVault as unknown as InstanceType<typeof Vault>;
+const retainedClaimRecords = [
+	{ id: 'retained', slots: ['First/V1.md', 'First/Missing.md'].map((path, i) => ({ version: i + 1, member: memberAt(retainedClaimVault, path) })) },
+	{ id: 'dependent', slots: ['Second/V1.md', 'Second/V2.md'].map((path, i) => ({ version: i + 1, member: memberAt(retainedClaimVault, path) })) },
+];
+const retainedClaimRegistry = new VersionRegistry(retainedClaimVault, retainedClaimRecords, async () => {});
+retainedClaimMock.rename('First/V1.md', 'Third/V1.md'); retainedClaimMock.delete('First/Missing.md');
+retainedClaimMock.rename('Second/V1.md', 'First/V1.md'); retainedClaimMock.rename('Second/V2.md', 'First/V2.md');
+const retainedResult = await retainedClaimRegistry.reconcileFolderRenames([{ oldPath: 'First', newPath: 'Third' }, { oldPath: 'Second', newPath: 'First' }]);
+equal(retainedResult.updatedMembers, 0, 'a failed series retains its old path claim against another move');
+assert.deepEqual(retainedClaimRegistry.getRecords(), retainedClaimRecords); assertions++;
+
+const precisionMoveVault = new Vault(['Precise/V1.md', 'Precise/V2.md']) as unknown as Vault;
+const precisionMock = precisionMoveVault as unknown as InstanceType<typeof Vault>;
+precisionMoveVault.getFileByPath('Precise/V1.md')!.stat.ctime = 12_345;
+const precisionRecords = [{ id: 'precision-move', slots: ['Precise/V1.md', 'Precise/V2.md'].map((path, i) => ({ version: i + 1, member: memberAt(precisionMoveVault, path) })) }];
+const precisionRegistry = new VersionRegistry(precisionMoveVault, precisionRecords, async () => {});
+precisionMock.rename('Precise/V1.md', 'Coarse/V1.md').stat.ctime = 12_000;
+precisionMock.rename('Precise/V2.md', 'Coarse/V2.md');
+equal((await precisionRegistry.reconcileFolderRename('Precise', 'Coarse')).updatedMembers, 0, 'display-compatible precision cannot authorize path rewriting');
+assert.deepEqual(precisionRegistry.getRecords(), precisionRecords); assertions++;
+
+const lateVault = new Vault(['Before/Topic.md', 'Before/V2.md']) as unknown as Vault;
+const lateMock = lateVault as unknown as InstanceType<typeof Vault>;
+const lateRecords = [{ id: 'late', slots: ['Before/Topic.md', 'Before/V2.md'].map((path, i) => ({ version: i + 1, member: memberAt(lateVault, path) })) }];
+let lateSaves = 0;
+const lateRegistry = new VersionRegistry(lateVault, lateRecords, async () => { lateSaves++; });
+const lateChanges: FolderPathChange[] = [{ oldPath: 'Before', newPath: 'Middle' }];
+let waits = 0;
+const settledChanges = await waitForFolderRenameTargets({
+	getChanges: () => [...lateChanges],
+	isReady: (changes) => lateRegistry.folderRenameTargetsReady(changes),
+	isStopped: () => false,
+	wait: async () => {
+		waits++;
+		if (waits === 2) lateChanges.push({ oldPath: 'Middle', newPath: 'After' });
+		if (waits === 4) {
+			lateMock.rename('Before/Topic.md', 'After/Topic.md');
+			lateMock.rename('Before/V2.md', 'After/V2.md');
+		}
+	},
+}, 10);
+equal(waits, 4, 'settlement waits for actual destinations beyond the first timer');
+equal(lateSaves, 0, 'waiting never persists an intermediate path');
+equal((await lateRegistry.reconcileFolderRenames(settledChanges)).updatedMembers, 2, 'latest observed destination wins');
+let missingWaits = 0;
+await waitForFolderRenameTargets({ getChanges: () => lateChanges, isReady: () => false, isStopped: () => false, wait: async () => { missingWaits++; } }, 3);
+equal(missingWaits, 3, 'unresolved members have a bounded wait');
+await waitForFolderRenameTargets({ getChanges: () => lateChanges, isReady: () => false, isStopped: () => true, wait: async () => { missingWaits++; } }, 3);
+equal(missingWaits, 3, 'unloading cancels further waiting');
+
+const failedSaveVault = new Vault(['Start/V1.md', 'Start/V2.md']) as unknown as Vault;
+const failedSaveMock = failedSaveVault as unknown as InstanceType<typeof Vault>;
+const failedSaveRecords = [{ id: 'failed-save', slots: ['Start/V1.md', 'Start/V2.md'].map((path, i) => ({ version: i + 1, member: memberAt(failedSaveVault, path) })) }];
+const failedSaveRegistry = new VersionRegistry(failedSaveVault, failedSaveRecords, async () => { throw new Error('injected folder save failure'); });
+failedSaveMock.rename('Start/V1.md', 'End/V1.md'); failedSaveMock.rename('Start/V2.md', 'End/V2.md');
+await assert.rejects(() => failedSaveRegistry.reconcileFolderRename('Start', 'End'), /injected folder save failure/); assertions++;
+assert.deepEqual(failedSaveRegistry.getRecords(), failedSaveRecords); assertions++;
+equal(failedSaveRegistry.index.getGroupById('failed-save')?.status, 'incomplete', 'failed persistence exposes files without moving any back');
+
+// Native deletion must work after index rebuild, and must reject a reused
+// path when the queued event finally runs.
+const rebuiltDeleteVault = new Vault(['Delete/Topic.md', 'Delete/V2.md']) as unknown as Vault;
+const rebuiltDeleteMock = rebuiltDeleteVault as unknown as InstanceType<typeof Vault>;
+const rebuiltDeleteRecords = [{ id: 'rebuilt-delete', slots: ['Delete/Topic.md', 'Delete/V2.md'].map((path, i) => ({ version: i + 1, member: memberAt(rebuiltDeleteVault, path) })) }];
+const rebuiltDeleteRegistry = new VersionRegistry(rebuiltDeleteVault, rebuiltDeleteRecords, async () => {});
+const removedFile = rebuiltDeleteVault.getFileByPath('Delete/V2.md')!;
+equal(rebuiltDeleteRegistry.findDeletedMembership(removedFile), null, 'an existing file is not a deletion event');
+rebuiltDeleteMock.delete('Delete/V2.md'); rebuiltDeleteRegistry.rebuild();
+equal(rebuiltDeleteRegistry.index.getGroupForFile(removedFile), null, 'the index has already forgotten the deleted file');
+assert.deepEqual(rebuiltDeleteRegistry.findDeletedMembership(removedFile), { seriesId: 'rebuilt-delete', version: 2 }); assertions++;
+rebuiltDeleteMock.add('Delete/V2.md', 'unrelated replacement');
+await assert.rejects(() => rebuiltDeleteRegistry.recordDeletedMember('rebuilt-delete', 2, removedFile), /path was reused/); assertions++;
+assert.deepEqual(rebuiltDeleteRegistry.getRecords(), rebuiltDeleteRecords); assertions++;
+rebuiltDeleteMock.delete('Delete/V2.md');
+await rebuiltDeleteRegistry.recordDeletedMember('rebuilt-delete', 2, removedFile);
+equal(rebuiltDeleteRegistry.getRecordById('rebuilt-delete'), null, 'confirmed sole companion deletion removes the stale two-slot series');
+check(rebuiltDeleteVault.getFileByPath('Delete/Topic.md'), 'V1 survives as an ordinary file');
+
+}
 
 const legacyIdentityVault = new Vault([
 	'Legacy topic.md',

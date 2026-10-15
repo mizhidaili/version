@@ -269,7 +269,7 @@ export const DA: Record<TranslationKey, string> = {
 	'view.rollbackFailed':
 		'Den nyoprettede tomme fil på {{path}} kunne ikke fjernes, efter registreringen mislykkedes. Den er stadig synlig og læsbar.',
 	'view.registryUpdateFailed':
-		'Versionsrelationen kunne ikke opdateres, efter filen blev flyttet eller omdøbt. Alle berørte filer er stadig synlige. {{message}}',
+		'Nogle versionsrelationer kunne ikke opdateres efter flytning eller omdøbning. Filer, der ikke kunne bekræftes, er stadig synlige. {{message}}',
 	'view.identityMigrationFailed':
 		'Version kunne ikke kontrollere identiteten på ældre medlemsfiler. De berørte filer forbliver synlige; åbn versionsstyringen for at reparere relationen. {{message}}',
 	'view.externalSettingsReloadFailed':
