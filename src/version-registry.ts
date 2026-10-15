@@ -1,5 +1,6 @@
-import { normalizePath, TFile, Vault } from 'obsidian';
+import { TFile, Vault } from 'obsidian';
 import { captureFile, isCapturedFile } from './captured-file';
+import { FolderPathChange, mapFolderChanges } from './folder-rename-batch';
 import {
 	cloneSeriesRecords,
 	memberMatchesFile,
@@ -17,6 +18,11 @@ import {
 	VersionGroup,
 	VersionIndex,
 } from './version-index';
+
+export interface FolderRenameResult {
+	updatedMembers: number;
+	unresolvedPaths: string[];
+}
 
 type PersistSeries = (series: VersionSeriesRecord[]) => Promise<void>;
 
@@ -805,6 +811,10 @@ export class VersionRegistry {
 		deletedFile: TFile,
 	): Promise<ReleaseVersionMembersResult> {
 		return this.enqueue(async () => {
+			const membership = this.findDeletedMembership(deletedFile);
+			if (membership?.seriesId !== seriesId || membership.version !== version) {
+				throw new Error('Deleted member changed or its path was reused.');
+			}
 			const next = this.getRecords();
 			const seriesIndex = next.findIndex((record) => record.id === seriesId);
 			if (seriesIndex < 0) {
@@ -868,102 +878,130 @@ export class VersionRegistry {
 		});
 	}
 
-	/**
-	 * Reconcile one folder rename/move that Obsidian has already completed.
-	 * This operation updates relationship paths only; it never renames, rolls
-	 * back, or otherwise writes any user file. Every registered descendant is
-	 * verified first and all affected series are persisted in one commit.
-	 */
-	async reconcileFolderRename(
-		oldFolderPath: string,
-		newFolderPath: string,
-	): Promise<number> {
+	/** A delete event is resolved from authoritative records, even if another
+	 * listener has already rebuilt the index after removing the file. */
+	findDeletedMembership(file: TFile): { seriesId: string; version: number } | null {
+		if (this.vault.getAbstractFileByPath(file.path)) return null;
+		const owners = this.records.flatMap((series) => series.slots.flatMap((slot) =>
+			slot.member?.path === file.path ? [{ series, slot }] : []));
+		if (owners.length !== 1) return null;
+		const { series, slot } = owners[0];
+		const versions = new Set(series.slots.map((candidate) => candidate.version));
+		const paths = series.slots.flatMap((candidate) => candidate.member ? [candidate.member.path] : []);
+		if (
+			!slot.member || !memberMatchesFile(slot.member, file) ||
+			this.records.filter((record) => record.id === series.id).length !== 1 ||
+			series.slots.length < 2 || !versions.has(1) || versions.size !== series.slots.length ||
+			new Set(paths).size !== paths.length ||
+			series.slots.some((candidate) => !Number.isInteger(candidate.version) ||
+				candidate.version < 1 || candidate.version > MAX_VERSION)
+		) return null;
+		return { seriesId: series.id, version: slot.version };
+	}
+
+	folderRenameTargetsReady(changes: readonly FolderPathChange[]): boolean {
+		return this.planFolderRenames(changes).unresolvedPaths.length === 0;
+	}
+
+	/** Only relationship metadata changes. A damaged series cannot veto the
+	 * verified path changes of independent series; its own slots stay intact. */
+	async reconcileFolderRename(oldPath: string, newPath: string): Promise<FolderRenameResult> {
+		return this.reconcileFolderRenames([{ oldPath, newPath }]);
+	}
+
+	async reconcileFolderRenames(changes: readonly FolderPathChange[]): Promise<FolderRenameResult> {
+		const captured = changes.map((change) => ({ ...change }));
 		return this.enqueue(async () => {
-			const oldFolder = normalizePath(oldFolderPath);
-			const newFolder = normalizePath(newFolderPath);
-			if (!oldFolder || !newFolder || oldFolder === newFolder) {
-				this.rebuild();
-				return 0;
-			}
-			// Obsidian has already moved the physical folder. Keep the unchanged
-			// records active but rebuild them immediately so any verification or
-			// persistence failure exposes every unresolved member fail-open.
 			this.rebuild();
-
-			const next = this.getRecords();
-			const affected: Array<{
-				file: TFile;
-				newPath: string;
-				slot: VersionSlotRecord;
-			}> = [];
-			const unaffectedPaths = new Set<string>();
-			const seenOldPaths = new Set<string>();
-			const seenNewPaths = new Set<string>();
-			const seenSeriesIds = new Set<string>();
-
-			for (const series of next) {
-				if (seenSeriesIds.has(series.id)) {
-					throw new Error('Version series identifiers are ambiguous.');
-				}
-				seenSeriesIds.add(series.id);
-				for (const slot of series.slots) {
-					if (!slot.member) {
-						continue;
-					}
-					const mapped = mapFolderDescendantPath(
-						slot.member.path,
-						oldFolder,
-						newFolder,
-					);
-					if (!mapped) {
-						unaffectedPaths.add(slot.member.path);
-						continue;
-					}
-					if (
-						seenOldPaths.has(slot.member.path) ||
-						seenNewPaths.has(mapped)
-					) {
-						throw new Error('Version folder members are ambiguous.');
-					}
-					seenOldPaths.add(slot.member.path);
-					seenNewPaths.add(mapped);
-					const file = this.vault.getFileByPath(mapped);
-					if (
-						!file ||
-						!isVersionableFile(file) ||
-						!memberMatchesFile(slot.member, file)
-					) {
-						throw new Error(
-							`The moved Version member could not be verified at ${mapped}.`,
-						);
-					}
-					affected.push({ file, newPath: mapped, slot });
-				}
-			}
-
-			if (affected.length === 0) {
-				this.rebuild();
-				return 0;
-			}
-			for (const item of affected) {
-				if (unaffectedPaths.has(item.newPath)) {
-					throw new Error(
-						`The moved Version path is already registered: ${item.newPath}.`,
-					);
-				}
-				// Recheck the exact live object immediately before persistence. A
-				// replacement file with the same name must never be adopted.
-				if (this.vault.getFileByPath(item.newPath) !== item.file) {
-					throw new Error(
-						`The moved Version member changed at ${item.newPath}.`,
-					);
-				}
-				item.slot.member = memberRecordFromFile(item.file);
-			}
-
-			await this.commit(next);
-			return affected.length;
+			const plan = this.planFolderRenames(captured);
+			if (plan.updatedMembers > 0) await this.commit(plan.records);
+			return { updatedMembers: plan.updatedMembers, unresolvedPaths: plan.unresolvedPaths };
 		});
+	}
+
+	private planFolderRenames(changes: readonly FolderPathChange[]): FolderRenameResult & {
+		records: VersionSeriesRecord[];
+	} {
+		const records = this.getRecords();
+		const idCounts = new Map<string, number>();
+		const sourceCounts = new Map<string, number>();
+		const targetCounts = new Map<string, number>();
+		// Count all claims, including invalid/unresolved series, before approving
+		// any destination. A conflict is never silently resolved by array order.
+		for (const series of records) {
+			idCounts.set(series.id, (idCounts.get(series.id) ?? 0) + 1);
+			for (const { member } of series.slots) {
+				if (!member) continue;
+				const target = mapFolderChanges(member.path, changes);
+				sourceCounts.set(member.path, (sourceCounts.get(member.path) ?? 0) + 1);
+				targetCounts.set(target, (targetCounts.get(target) ?? 0) + 1);
+			}
+		}
+		let updatedMembers = 0;
+		const unresolvedPaths = new Set<string>();
+		const plans = new Map<VersionSeriesRecord, Array<{
+			slot: VersionSlotRecord; target: string; file: TFile;
+		}>>();
+		for (const series of records) {
+			const affected = series.slots.flatMap((slot) => {
+				if (!slot.member) return [];
+				const target = mapFolderChanges(slot.member.path, changes);
+				return target === slot.member.path ? [] : [{ slot, target }];
+			});
+			if (affected.length === 0) continue;
+			let invalid = idCounts.get(series.id) !== 1;
+			try { validateSlots(series.slots, true); } catch { invalid = true; }
+			const candidates = affected.map(({ slot, target }) => {
+				const member = slot.member!;
+				const file = this.vault.getFileByPath(target);
+				if (
+					invalid || sourceCounts.get(member.path) !== 1 ||
+					targetCounts.get(target) !== 1 || !file ||
+					!isVersionableFile(file) || !memberMatchesFile(member, file)
+				) {
+					unresolvedPaths.add(target);
+					return null;
+				}
+				return { slot, target, file };
+			});
+			if (candidates.some((candidate) => candidate === null)) continue;
+			plans.set(series, candidates.filter((candidate) => candidate !== null));
+		}
+		// A rejected series retains its OLD claims. Recheck those actual final
+		// claims as well as proposed targets; rejection can propagate to another
+		// move that depended on the first series vacating a registered path.
+		let rejected: boolean;
+		do {
+			rejected = false;
+			const finalCounts = new Map<string, number>();
+			for (const series of records) {
+				for (const slot of series.slots) {
+					if (!slot.member) continue;
+					const target = plans.get(series)?.find((item) => item.slot === slot)?.target ?? slot.member.path;
+					finalCounts.set(target, (finalCounts.get(target) ?? 0) + 1);
+				}
+			}
+			for (const [series, candidates] of plans) {
+				const conflicts = candidates.filter(({ target }) => finalCounts.get(target) !== 1);
+				if (conflicts.length > 0) {
+					for (const { target } of conflicts) unresolvedPaths.add(target);
+					plans.delete(series);
+					rejected = true;
+				}
+			}
+		} while (rejected);
+		for (const candidates of plans.values()) {
+			for (const candidate of candidates) {
+				// Keep the registered identity; this operation changes paths only.
+				candidate.slot.member = {
+					...candidate.slot.member!,
+					path: candidate.target,
+					lastKnownName: candidate.file.basename,
+				};
+				updatedMembers++;
+			}
+		}
+		return { records, updatedMembers, unresolvedPaths: [...unresolvedPaths] };
 	}
 
 	private assertFilesAreUnmanaged(files: TFile[]): void {
@@ -1190,16 +1228,4 @@ function createSeriesId(): string {
 	}
 
 	return `version-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function mapFolderDescendantPath(
-	path: string,
-	oldFolderPath: string,
-	newFolderPath: string,
-): string | null {
-	const prefix = `${oldFolderPath}/`;
-	if (!path.startsWith(prefix)) {
-		return null;
-	}
-	return normalizePath(`${newFolderPath}/${path.slice(prefix.length)}`);
 }
