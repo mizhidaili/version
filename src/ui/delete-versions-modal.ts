@@ -80,9 +80,7 @@ export class DeleteVersionsModal extends Modal {
 			this.i18n,
 		);
 		for (const versionFile of this.group.versions) {
-			if (versionFile.version !== 1) {
-				this.addVersionChoice(listEl, versionFile);
-			}
+			this.addVersionChoice(listEl, versionFile);
 		}
 
 		const actions = this.contentEl.createDiv({
@@ -102,16 +100,10 @@ export class DeleteVersionsModal extends Modal {
 		// Build every selection-dependent control before applying the context
 		// passed from the exact-version actions modal. Otherwise a later button
 		// constructor can silently reset the correctly synchronized state.
-		if (initial?.version !== 1) {
-			this.updatingSelection = true;
-			if (initial) {
-				this.selectedPaths.add(initial.path);
-				const checkbox = this.versionCheckboxes.get(initial.path);
-				if (checkbox) {
-					checkbox.checked = true;
-				}
-			}
-			this.updatingSelection = false;
+		if (initial?.version === 1) {
+			this.setAllSelected(true);
+		} else if (initial) {
+			this.selectedPaths.add(initial.path);
 		}
 		this.syncSelectionState();
 
@@ -157,13 +149,21 @@ export class DeleteVersionsModal extends Modal {
 			}),
 		});
 		checkbox.addEventListener('change', () => {
-			if (this.updatingSelection) {
+			if (this.updatingSelection || this.submitting) {
+				return;
+			}
+			if (versionFile.version === 1 && checkbox.checked) {
+				this.setAllSelected(true);
 				return;
 			}
 			if (checkbox.checked) {
 				this.selectedPaths.add(versionFile.path);
 			} else {
 				this.selectedPaths.delete(versionFile.path);
+				// V1 can only be trashed together with every companion. A partial
+				// selection must immediately remove that whole-series authorization.
+				const v1 = this.group.versions.find((member) => member.version === 1);
+				if (v1) this.selectedPaths.delete(v1.path);
 			}
 			this.syncSelectionState();
 		});
@@ -180,14 +180,14 @@ export class DeleteVersionsModal extends Modal {
 	}
 
 	private setAllSelected(selected: boolean): void {
-		if (this.updatingSelection) {
+		if (this.updatingSelection || this.submitting) {
 			return;
 		}
 
 		this.updatingSelection = true;
 		this.selectedPaths.clear();
 		for (const versionFile of this.group.versions) {
-			if (versionFile.version !== 1 && selected) {
+			if (selected) {
 				this.selectedPaths.add(versionFile.path);
 			}
 			const checkbox = this.versionCheckboxes.get(versionFile.path);
@@ -201,11 +201,17 @@ export class DeleteVersionsModal extends Modal {
 
 	private syncSelectionState(): void {
 		const selectedCount = this.selectedPaths.size;
-		const totalCount = this.group.versions.filter(
-			(versionFile) => versionFile.version !== 1,
-		).length;
+		const totalCount = this.group.versions.length;
+		const includesV1 = this.group.versions.some(
+			(member) => member.version === 1 && this.selectedPaths.has(member.path),
+		);
 		this.updatingSelection = true;
+		for (const [path, checkbox] of this.versionCheckboxes) {
+			checkbox.checked = this.selectedPaths.has(path);
+			checkbox.disabled = this.submitting;
+		}
 		if (this.selectAllCheckbox) {
+			this.selectAllCheckbox.disabled = this.submitting;
 			this.selectAllCheckbox.checked = totalCount > 0 && selectedCount === totalCount;
 			this.selectAllCheckbox.indeterminate = selectedCount > 0 && selectedCount < totalCount;
 		}
@@ -214,7 +220,9 @@ export class DeleteVersionsModal extends Modal {
 			?.setButtonText(
 				selectedCount === 0
 					? this.i18n.t('delete.moveSelected')
-					: this.i18n.t('delete.moveCount', {
+					: includesV1
+						? this.i18n.t('delete.moveSeries', { count: selectedCount })
+						: this.i18n.t('delete.moveCount', {
 							count: selectedCount,
 							unit: this.i18n.t(
 								selectedCount === 1
@@ -266,7 +274,7 @@ export class DeleteVersionsModal extends Modal {
 		this.cancelButton?.setDisabled(true);
 		this.syncSelectionState();
 		try {
-			// Release the exact V2+ members first. If trash subsequently fails, the
+			// Release the exact selected members first. If trash subsequently fails, the
 			// file remains an ordinary visible note instead of corrupting the series.
 			await this.releaseVersions(selectedCaptures);
 		} catch (error) {
@@ -306,6 +314,10 @@ export class DeleteVersionsModal extends Modal {
 						: 'common.versions',
 				),
 			}));
+			const v1 = selectedCaptures.find((capture) => capture.version === 1);
+			if (v1 && failedPaths.includes(v1.path) && failedPaths.length > 1) {
+				new Notice(this.i18n.t('delete.v1Retained'));
+			}
 		}
 	}
 }

@@ -225,8 +225,8 @@ export class VersionFileActionsModal extends Modal {
 			this.onManage(file);
 		});
 		// This is intentionally a batch entry point rather than an exact-version
-		// delete command. The next dialog excludes V1 and explains how to replace
-		// the representative before its real file can leave the relationship.
+		// delete command. The next dialog selects the whole series for V1 and
+		// makes that scope explicit before any file is moved to trash.
 		this.addAction('actions.delete', () => {
 			const file = this.selected.file;
 			this.close();

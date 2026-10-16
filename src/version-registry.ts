@@ -731,14 +731,16 @@ export class VersionRegistry {
 	}
 
 	/**
-	 * Release exact, still-live V2+ members before their real files cross a
+	 * Release exact, still-live members before their real files cross a
 	 * destructive trash boundary. A middle number becomes an ordinary numeric
-	 * gap; if only V1 would remain, the series is dissolved explicitly.
+	 * gap; if only V1 would remain, the series is dissolved explicitly. V1 may
+	 * only be released with explicit whole-series scope and every live member.
 	 */
 	async releaseVersionMembers(
 		seriesId: string,
 		captures: VersionMemberRelease[],
 		expectedSeries?: VersionSeriesRecord | null,
+		scope: 'selected-members' | 'whole-series' = 'selected-members',
 	): Promise<ReleaseVersionMembersResult> {
 		return this.enqueue(async () => {
 			this.assertExpectedSeries(seriesId, expectedSeries);
@@ -747,7 +749,7 @@ export class VersionRegistry {
 			}
 			const versions = new Set<number>();
 			for (const capture of captures) {
-				if (capture.version === 1) {
+				if (capture.version === 1 && scope !== 'whole-series') {
 					throw new Error('V1 must be replaced before it can leave a series.');
 				}
 				if (versions.has(capture.version)) {
@@ -786,11 +788,17 @@ export class VersionRegistry {
 					throw new Error(`V${capture.version} is no longer the registered file.`);
 				}
 			}
+			if (scope === 'whole-series' && (
+				!versions.has(1) ||
+				series.slots.some((slot) => slot.member && !versions.has(slot.version))
+			)) {
+				throw new Error('Whole-series trash requires V1 and every registered file.');
+			}
 
 			series.slots = series.slots.filter(
 				(slot) => !versions.has(slot.version),
 			);
-			const dissolved = series.slots.length < 2;
+			const dissolved = scope === 'whole-series' || series.slots.length < 2;
 			if (dissolved) {
 				next.splice(seriesIndex, 1);
 			}

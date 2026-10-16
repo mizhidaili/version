@@ -63,13 +63,15 @@ const EN = {
 		"Nothing is selected by default. Select only the versions you intend to remove. Each selected version's real file will be moved to the trash location configured in Obsidian.",
 	'delete.descriptionExact':
 		'V{{version}} is selected from the version action you opened. Review it before moving its real file to the trash location configured in Obsidian.',
-	'delete.selectAll': 'Select all removable versions',
+	'delete.selectAll': 'Select all versions (including V1)',
 	'delete.selectAllDescription':
-		'V1 remains as the series representative.',
+		'Includes V1 and every version file in this series.',
 	'delete.v1RequiresAll':
-		'V1 represents the series. Replace it in Version management before removing its file.',
+		'Selecting V1 selects the entire series. Deselect V1 to keep it and remove only the selected companion files.',
 	'delete.moveSelected': 'Move selected files to trash',
 	'delete.moveCount': 'Move files for {{count}} {{unit}} to trash',
+	'delete.moveSeries': 'Move entire series to trash ({{count}} files)',
+	'delete.v1Retained': 'V1 was kept because another version could not be moved to trash. Review the remaining files before trying again.',
 	'delete.versionLabel': 'Version {{version}}',
 	'delete.selectedMissing': 'The files for the selected versions no longer exist.',
 	'delete.selectedChanged':
@@ -344,12 +346,14 @@ const ZH: Record<TranslationKey, string> = {
 		'默认不选择任何版本。请只选择确实要移除的版本；每个所选版本对应的真实文件都会进入 Obsidian 当前设置的废纸篓。',
 	'delete.descriptionExact':
 		'已根据你刚才打开的版本操作选中 V{{version}}。请确认无误后，再将它的真实文件移入 Obsidian 当前设置的废纸篓。',
-	'delete.selectAll': '选择全部可移除版本',
+	'delete.selectAll': '选择全部版本（含 V1）',
 	'delete.selectAllDescription':
-		'V1 会作为系列代表保留。',
-	'delete.v1RequiresAll': 'V1 代表整个系列。请先在版本管理中更换 V1，再移除它的文件。',
+		'包含 V1 和此系列中所有版本的文件。',
+	'delete.v1RequiresAll': '选择 V1 会选中整个系列。取消选择 V1，可保留它并只移除所选的其他版本文件。',
 	'delete.moveSelected': '将所选文件移入废纸篓',
 	'delete.moveCount': '将 {{count}}{{unit}}对应的文件移入废纸篓',
+	'delete.moveSeries': '将整个系列移入废纸篓（{{count}} 个文件）',
+	'delete.v1Retained': '其他版本未能全部移入废纸篓，因此已保留 V1。请检查剩余文件后重试。',
 	'delete.versionLabel': '版本 {{version}}',
 	'delete.selectedMissing': '所选版本对应的文件已经不存在。',
 	'delete.selectedChanged':

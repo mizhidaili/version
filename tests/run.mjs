@@ -44,7 +44,7 @@ function verifyI18nCatalogs(root) {
 		da: readCatalog(path.join(root, 'src/locales/da.ts'), 'DA'),
 		ja: readCatalog(path.join(root, 'src/locales/ja.ts'), 'JA'),
 	};
-	const expectedKeyCount = 226;
+	const expectedKeyCount = 228;
 	const referenceKeys = Object.keys(catalogs.en).sort();
 	assert.equal(
 		referenceKeys.length,
@@ -112,7 +112,7 @@ function verifyI18nCatalogs(root) {
 			'actions.move': /version.*file/iu,
 			'actions.moveSeries': /version files/iu,
 			'delete.description': /real file.*trash/iu,
-			'delete.selectAllDescription': /V1.*representative/iu,
+			'delete.selectAllDescription': /Includes V1.*every version file/iu,
 			'fileExplorer.deleteVersions': /choose version files.*trash/iu,
 			'actions.delete': /choose version files.*trash/iu,
 			'manage.deleteSlot': /keep its file/iu,
@@ -127,7 +127,7 @@ function verifyI18nCatalogs(root) {
 			'actions.move': /版本的文件/u,
 			'actions.moveSeries': /版本文件/u,
 			'delete.description': /真实文件.*废纸篓/u,
-			'delete.selectAllDescription': /V1.*系列代表/u,
+			'delete.selectAllDescription': /包含 V1.*所有版本/u,
 			'fileExplorer.deleteVersions': /选择版本文件.*废纸篓/u,
 			'actions.delete': /选择版本文件.*废纸篓/u,
 			'manage.deleteSlot': /保留文件/u,
@@ -142,7 +142,7 @@ function verifyI18nCatalogs(root) {
 			'actions.move': /filen.*version/iu,
 			'actions.moveSeries': /versionsfiler/iu,
 			'delete.description': /faktiske fil.*papirkurv/iu,
-			'delete.selectAllDescription': /V1.*repræsentant/iu,
+			'delete.selectAllDescription': /V1.*alle versionsfiler/iu,
 			'fileExplorer.deleteVersions': /vælg versionsfiler.*papirkurv/iu,
 			'actions.delete': /vælg versionsfiler.*papirkurv/iu,
 			'manage.deleteSlot': /behold filen/iu,
@@ -157,7 +157,7 @@ function verifyI18nCatalogs(root) {
 			'actions.move': /バージョンのファイル/u,
 			'actions.moveSeries': /バージョンファイル/u,
 			'delete.description': /実ファイル.*ゴミ箱/u,
-			'delete.selectAllDescription': /V1.*代表/u,
+			'delete.selectAllDescription': /V1.*すべてのバージョンファイル/u,
 			'fileExplorer.deleteVersions': /ゴミ箱.*バージョンファイル.*選択/u,
 			'actions.delete': /ゴミ箱.*バージョンファイル.*選択/u,
 			'manage.deleteSlot': /ファイルは保持/u,

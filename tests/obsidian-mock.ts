@@ -102,6 +102,29 @@ export class Modal {
 
 export class Setting {}
 
+export class ButtonComponent {
+	buttonEl: HTMLButtonElement;
+	constructor(containerEl: HTMLElement) {
+		this.buttonEl = containerEl.createEl('button');
+	}
+	setButtonText(text: string): this {
+		this.buttonEl.textContent = text;
+		return this;
+	}
+	setClass(className: string): this {
+		this.buttonEl.addClass(className);
+		return this;
+	}
+	setDisabled(disabled: boolean): this {
+		this.buttonEl.disabled = disabled;
+		return this;
+	}
+	onClick(callback: () => void): this {
+		this.buttonEl.addEventListener('click', callback);
+		return this;
+	}
+}
+
 export class TextComponent {}
 
 export const MarkdownRenderer = {
@@ -178,7 +201,10 @@ export class Vault {
 }
 
 export class Notice {
-	constructor(_message: string | DocumentFragment) {}
+	static messages: Array<string | DocumentFragment> = [];
+	constructor(message: string | DocumentFragment) {
+		Notice.messages.push(message);
+	}
 }
 
 export function normalizePath(path: string): string {

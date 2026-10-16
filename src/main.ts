@@ -1032,6 +1032,9 @@ export default class VersionPlugin extends Plugin {
 					current.id,
 					versions,
 					expectedSeries,
+					versions.some((member) => member.version === 1)
+						? 'whole-series'
+						: 'selected-members',
 				);
 			},
 			this.i18n,

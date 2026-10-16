@@ -66,6 +66,8 @@ Multi-Version Notes runs locally. It does not upload vault contents, collect tel
 
 V1 represents a healthy series in the File Explorer, but it is not more correct, more final, or less editable than another version.
 
+In **Choose version files to trash**, selecting V1 or **Select all versions (including V1)** selects every file in the series. The confirmation button shows the whole-series scope and file count; successful deletion includes V1. Deselect V1 to keep it and trash only the selected companion files. If a companion cannot be trashed, V1 is retained and the remaining files stay visible for review.
+
 ### Installation
 
 Install Multi-Version Notes from **Settings → Community plugins** by searching for its name and selecting **Install**, then **Enable**.
@@ -142,6 +144,8 @@ Multi-Version Notes 完全在本地运行，不上传仓库内容，不收集遥
 5. “+”会一直保留，用于继续快捷创建版本；编辑区右缘的版本页签用于切换已有版本。
 
 V1 是健康系列在文件列表中的代表，但它并不比其他版本更正确、更正式，也同样可以继续编辑。
+
+在“选择版本文件移入废纸篓”中，选择 V1 或“选择全部版本（含 V1）”会选中整个系列。确认按钮会显示整个系列及文件数量；删除成功时，V1 也会进入废纸篓。取消选择 V1，就只删除所选的其他版本文件。如果其他版本删除失败，会保留 V1，并让剩余文件保持可见，供你检查。
 
 ### 安装
 

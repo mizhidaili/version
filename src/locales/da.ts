@@ -55,13 +55,15 @@ export const DA: Record<TranslationKey, string> = {
 		'Intet er valgt på forhånd. Vælg kun de versioner, du vil fjerne. Den faktiske fil for hver valgt version flyttes til den papirkurv, der er valgt i Obsidian.',
 	'delete.descriptionExact':
 		'V{{version}} er valgt fra den versionshandling, du åbnede. Kontrollér den, før dens faktiske fil flyttes til den papirkurv, der er valgt i Obsidian.',
-	'delete.selectAll': 'Vælg alle versioner, der kan fjernes',
+	'delete.selectAll': 'Vælg alle versioner (inklusive V1)',
 	'delete.selectAllDescription':
-		'V1 bevares som seriens repræsentant.',
+		'Omfatter V1 og alle versionsfiler i denne serie.',
 	'delete.v1RequiresAll':
-		'V1 repræsenterer serien. Erstat den i versionsstyringen, før filen fjernes.',
+		'Når V1 vælges, vælges hele serien. Fravælg V1 for at beholde den og kun fjerne de andre valgte versionsfiler.',
 	'delete.moveSelected': 'Flyt valgte filer til papirkurven',
 	'delete.moveCount': 'Flyt filer for {{count}} {{unit}} til papirkurven',
+	'delete.moveSeries': 'Flyt hele serien til papirkurven ({{count}} filer)',
+	'delete.v1Retained': 'V1 blev bevaret, fordi en anden version ikke kunne flyttes til papirkurven. Kontrollér de resterende filer, før du prøver igen.',
 	'delete.versionLabel': 'Version {{version}}',
 	'delete.selectedMissing': 'Filerne for de valgte versioner findes ikke længere.',
 	'delete.selectedChanged':

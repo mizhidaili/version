@@ -54,13 +54,15 @@ export const JA: Record<TranslationKey, string> = {
 		'初期状態では何も選択されていません。削除するバージョンだけを選んでください。選択した各バージョンの実ファイルが、Obsidian で設定したゴミ箱に移動します。',
 	'delete.descriptionExact':
 		'直前に開いたバージョン操作により V{{version}} が選択されています。内容を確認してから、実ファイルを Obsidian で設定したゴミ箱に移動してください。',
-	'delete.selectAll': '削除可能なバージョンをすべて選択',
+	'delete.selectAll': 'すべてのバージョンを選択（V1 を含む）',
 	'delete.selectAllDescription':
-		'V1 はシリーズの代表として残ります。',
+		'V1 と、このシリーズのすべてのバージョンファイルを含みます。',
 	'delete.v1RequiresAll':
-		'V1 はシリーズの代表です。ファイルを外す前に、バージョン管理で V1 を差し替えてください。',
+		'V1 を選択するとシリーズ全体が選択されます。V1 の選択を解除すると、V1 を残して選択した他のバージョンファイルだけを削除できます。',
 	'delete.moveSelected': '選択したファイルをゴミ箱に移動',
 	'delete.moveCount': '{{count}}{{unit}}のファイルをゴミ箱に移動',
+	'delete.moveSeries': 'シリーズ全体をゴミ箱に移動（{{count}} ファイル）',
+	'delete.v1Retained': '他のバージョンをすべてゴミ箱に移動できなかったため、V1 を残しました。残ったファイルを確認してから再試行してください。',
 	'delete.versionLabel': 'バージョン {{version}}',
 	'delete.selectedMissing': '選択したバージョンのファイルは存在しません。',
 	'delete.selectedChanged':

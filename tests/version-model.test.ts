@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { FileView, Modal, TFile, Vault } from 'obsidian';
+import { FileView, Modal, Notice, TFile, Vault } from 'obsidian';
 import { findRecoveryPath } from '../src/import-recovered-markdown';
 import {
 	cloneSeriesRecords,
@@ -22,6 +22,7 @@ import {
 	VersionIndex,
 } from '../src/version-index';
 import { VersionRegistry } from '../src/version-registry';
+import { DeleteVersionsModal } from '../src/ui/delete-versions-modal';
 import { getVersionFileMenuState } from '../src/version-file-menu-state';
 import { SerializedDataStore } from '../src/serialized-data-store';
 import { filterAllowedSeries } from '../src/series-choice-filter';
@@ -3710,6 +3711,13 @@ class VersionToolbarElementFixture {
 	scrollTop = 0;
 	textContent = '';
 	type = '';
+	checked = false;
+	disabled = false;
+	indeterminate = false;
+
+	setText(text: string): void {
+		this.textContent = text;
+	}
 
 	readonly classList = {
 		add: (...classNames: string[]) => {
@@ -3852,6 +3860,153 @@ class VersionToolbarElementFixture {
 		this.children.push(child);
 		return child;
 	}
+}
+
+function makeTrashModalFixture(initialVersion: number | null = null) {
+	const vault = new Vault(['Trash V1.md', 'Trash V2.canvas', 'Trash V4.md']);
+	const record: VersionSeriesRecord = {
+		id: 'trash-modal',
+		slots: [
+			{ version: 1, member: memberAt(vault, 'Trash V1.md') },
+			{ version: 2, member: memberAt(vault, 'Trash V2.canvas') },
+			{ version: 4, member: memberAt(vault, 'Trash V4.md') },
+		],
+	};
+	const persisted: VersionSeriesRecord[][] = [];
+	const registry = new VersionRegistry(vault, [record], async (next) => {
+		persisted.push(next);
+	});
+	const group = registry.index.getGroupById(record.id)!;
+	const trashed: string[] = [];
+	let failTrashPath: string | null = null;
+	let failPersistence = false;
+	const modal = new DeleteVersionsModal({
+		vault,
+		fileManager: { trashFile: async (file: TFile) => {
+			if (file.path === failTrashPath) throw new Error('Trash unavailable');
+			trashed.push(file.path);
+			vault.delete(file);
+		} },
+	} as never, group, () => registry.rebuild(), async (captures) => {
+		if (failPersistence) throw new Error('Persistence unavailable');
+		await registry.releaseVersionMembers(record.id, captures, expectedRecord,
+			captures.some((capture) => capture.version === 1) ? 'whole-series' : 'selected-members');
+	}, new VersionI18n('en'), group.versions.find((member) => member.version === initialVersion)?.path);
+	const harness = modal as unknown as {
+		modalEl: VersionToolbarElementFixture;
+		contentEl: VersionToolbarElementFixture;
+		titleEl: VersionToolbarElementFixture;
+		selectedPaths: Set<string>;
+		versionCheckboxes: Map<string, VersionToolbarElementFixture>;
+		selectAllCheckbox: VersionToolbarElementFixture;
+		deleteButton: { buttonEl: VersionToolbarElementFixture };
+		submit(): Promise<void>;
+	};
+	const expectedRecord = registry.getRecordById(record.id)!;
+	harness.modalEl = new VersionToolbarElementFixture();
+	harness.contentEl = new VersionToolbarElementFixture();
+	harness.titleEl = new VersionToolbarElementFixture();
+	modal.onOpen();
+	const select = (version: number, checked: boolean) => {
+		const path = group.versions.find((member) => member.version === version)!.path;
+		const input = harness.versionCheckboxes.get(path);
+		check(input, `V${version} has a labelled trash checkbox`);
+		input.checked = checked;
+		for (const listener of input.listeners.get('change') ?? []) listener({});
+	};
+	return { vault, registry, record, group, persisted, trashed, modal, harness, select,
+		failTrash: (path: string) => { failTrashPath = path; },
+		failPersistence: () => { failPersistence = true; },
+	};
+}
+
+const wholeTrash = makeTrashModalFixture();
+equal(wholeTrash.harness.selectedPaths.size, 0, 'series trash opens with no preselected files');
+check(wholeTrash.harness.deleteButton.buttonEl.disabled, 'empty selection cannot be submitted');
+wholeTrash.select(1, true);
+assert.deepEqual([...wholeTrash.harness.selectedPaths], ['Trash V1.md', 'Trash V2.canvas', 'Trash V4.md']);
+assertions += 1;
+check(/entire series.*3 files/iu.test(wholeTrash.harness.deleteButton.buttonEl.textContent),
+	'V1 selection explicitly confirms whole-series trash including its real file');
+wholeTrash.select(2, false);
+check(!wholeTrash.harness.versionCheckboxes.get('Trash V1.md')!.checked,
+	'deselecting a companion also deselects V1');
+assert.deepEqual([...wholeTrash.harness.selectedPaths], ['Trash V4.md']);
+assertions += 1;
+wholeTrash.select(1, true);
+await wholeTrash.harness.submit();
+assert.deepEqual(wholeTrash.trashed, ['Trash V2.canvas', 'Trash V4.md', 'Trash V1.md'],
+	JSON.stringify(Notice.messages.slice(-3)));
+assertions += 1;
+equal(wholeTrash.registry.getRecords().length, 0, 'whole-series trash handles gaps in version numbering');
+equal(wholeTrash.vault.getFileByPath('Trash V1.md'), null, 'successful whole-series trash includes V1');
+
+const initialWholeTrash = makeTrashModalFixture(1);
+equal(initialWholeTrash.harness.selectedPaths.size, 3, 'exact V1 entry selects every real file for review');
+initialWholeTrash.select(1, false);
+assert.deepEqual([...initialWholeTrash.harness.selectedPaths], ['Trash V2.canvas', 'Trash V4.md']);
+assertions += 1;
+await initialWholeTrash.harness.submit();
+check(initialWholeTrash.vault.getFileByPath('Trash V1.md'), 'explicitly deselecting V1 preserves its real file');
+
+const initialPartialTrash = makeTrashModalFixture(2);
+assert.deepEqual([...initialPartialTrash.harness.selectedPaths], ['Trash V2.canvas']);
+assertions += 1;
+await initialPartialTrash.harness.submit();
+assert.deepEqual(initialPartialTrash.trashed, ['Trash V2.canvas']);
+assertions += 1;
+equal(initialPartialTrash.registry.index.getGroupById('trash-modal')?.status, 'healthy',
+	'partial trash preserves a healthy V1/V4 series');
+
+const allTrash = makeTrashModalFixture();
+allTrash.harness.selectAllCheckbox.checked = true;
+for (const listener of allTrash.harness.selectAllCheckbox.listeners.get('change') ?? []) listener({});
+equal(allTrash.harness.selectedPaths.size, 3, 'Select all includes V1');
+check(allTrash.harness.versionCheckboxes.get('Trash V1.md')!.checked, 'Select all visibly checks V1');
+allTrash.harness.selectAllCheckbox.checked = false;
+for (const listener of allTrash.harness.selectAllCheckbox.listeners.get('change') ?? []) listener({});
+equal(allTrash.harness.selectedPaths.size, 0, 'deselect all clears V1 and companions');
+
+for (const change of ['edit', 'rename', 'replace', 'registry', 'persistence'] as const) {
+	const fixture = makeTrashModalFixture(1);
+	const before = fixture.registry.getRecords();
+	const v1 = fixture.vault.getFileByPath('Trash V1.md')!;
+	if (change === 'edit') fixture.vault.modify(v1, 'Changed after confirmation opened');
+	if (change === 'rename') fixture.vault.rename(v1.path, 'Renamed V1.md');
+	if (change === 'replace') {
+		fixture.vault.delete(v1);
+		fixture.vault.add(v1.path, 'Unrelated replacement');
+	}
+	if (change === 'registry') {
+		const v5 = fixture.vault.add('New V5.md');
+		await fixture.registry.addMember('trash-modal', 5, v5);
+	}
+	if (change === 'persistence') fixture.failPersistence();
+	await fixture.harness.submit();
+	equal(fixture.trashed.length, 0, `${change} after opening aborts before any trash call`);
+	if (change !== 'registry') {
+		assert.deepEqual(fixture.registry.getRecords(), before, `${change} preserves the series`);
+		assertions += 1;
+	}
+}
+
+const partialFailureTrash = makeTrashModalFixture(1);
+partialFailureTrash.failTrash('Trash V2.canvas');
+await partialFailureTrash.harness.submit();
+assert.deepEqual(partialFailureTrash.trashed, ['Trash V4.md']);
+assertions += 1;
+check(partialFailureTrash.vault.getFileByPath('Trash V1.md'), 'a companion failure preserves V1');
+equal(partialFailureTrash.registry.getRecords().length, 0, 'failed trash survivors remain visible ordinary files');
+check(Notice.messages.some((message) => typeof message === 'string' && /V1 was kept/u.test(message)),
+	'partial failure explicitly explains why V1 remains');
+
+for (const selectedNumbers of [[1], [1, 2], [2, 4]]) {
+	const fixture = makeTrashModalFixture();
+	await assert.rejects(() => fixture.registry.releaseVersionMembers('trash-modal',
+		fixture.group.versions.filter((member) => selectedNumbers.includes(member.version)).map(captureVersionForTrash),
+		fixture.registry.getRecordById('trash-modal'), 'whole-series'), /requires V1 and every registered file/u);
+	assertions += 1;
+	equal(fixture.persisted.length, 0, 'incomplete whole-series authorization never changes the registry');
 }
 
 const compatibleToolbarFixture = makeCompatibleAppendFixture(
